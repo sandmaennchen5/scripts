@@ -11,7 +11,7 @@ QUIET="${QUIET:-false}"                               # true | false
 UNATTENDED="${UNATTENDED:-false}"                     # true | false
 
 SCRIPT_UPDATE_MODE="${SCRIPT_UPDATE_MODE:-ask}"             # ask | auto | off
-SCRIPT_UPDATE_URL="${SCRIPT_UPDATE_URL:-https://raw.githubusercontent.com/sandmaennchen5/scripts/main/pangolin/maintenance.sh}"
+SCRIPT_UPDATE_URL="${SCRIPT_UPDATE_URL:-https://raw.githubusercontent.com/sandmaennchen5/scripts/refs/heads/main/pangolin/maintenance.sh}"
 SCRIPT_UPDATE_TIMEOUT="${SCRIPT_UPDATE_TIMEOUT:-8}"
 
 UPDATE_MODE="${UPDATE_MODE:-ask}"                     # ask | auto | manual | none
