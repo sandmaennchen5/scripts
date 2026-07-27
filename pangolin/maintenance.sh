@@ -2,13 +2,17 @@
 set -euo pipefail
 
 SCRIPT_NAME="Pangolin Maintenance Tool"
-SCRIPT_VERSION="2.0"
+SCRIPT_VERSION="2.1"
 
 LANGUAGE="${LANGUAGE:-en}"                            # de | en
 SHOW_SCRIPT_INFO="${SHOW_SCRIPT_INFO:-true}"          # true | false
 DEBUG="${DEBUG:-false}"                               # true | false
 QUIET="${QUIET:-false}"                               # true | false
 UNATTENDED="${UNATTENDED:-false}"                     # true | false
+
+SCRIPT_UPDATE_MODE="${SCRIPT_UPDATE_MODE:-ask}"             # ask | auto | off
+SCRIPT_UPDATE_URL="${SCRIPT_UPDATE_URL:-https://raw.githubusercontent.com/sandmaennchen5/scripts/main/pangolin/maintenance.sh}"
+SCRIPT_UPDATE_TIMEOUT="${SCRIPT_UPDATE_TIMEOUT:-8}"
 
 UPDATE_MODE="${UPDATE_MODE:-ask}"                     # ask | auto | manual | none
 UPDATE_LEVEL="${UPDATE_LEVEL:-ask}"                   # ask | patch | next-minor | minor | next-major | major
@@ -82,6 +86,84 @@ read_user_input() {
     else
         IFS= read -r -p "$prompt" "$variable_name"
     fi
+}
+
+version_is_greater() {
+    local candidate="$1" current="$2"
+    [[ -n "$candidate" && "$candidate" != "$current" ]] || return 1
+    [[ "$(printf '%s\n%s\n' "$current" "$candidate" | sort -V | tail -n1)" == "$candidate" ]]
+}
+
+check_script_update() {
+    local force="${1:-false}"
+    shift || true
+    local mode="${SCRIPT_UPDATE_MODE,,}"
+    local script_path remote_file remote_version answer backup_file tmp_dir
+
+    case "$mode" in
+        ask|auto|off) ;;
+        *)
+            printf '⚠️ %s\n' "$(text "Ungültiger SCRIPT_UPDATE_MODE '$SCRIPT_UPDATE_MODE'; Update-Prüfung wird übersprungen." "Invalid SCRIPT_UPDATE_MODE '$SCRIPT_UPDATE_MODE'; skipping script update check.")" >&2
+            return 0
+            ;;
+    esac
+
+    [[ "$force" == true || "$mode" != off ]] || return 0
+    command -v curl >/dev/null 2>&1 || return 0
+
+    script_path=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
+    [[ -f "$script_path" && -w "$script_path" ]] || {
+        [[ "$force" == true ]] && printf '❌ %s\n' "$(text "Skriptdatei ist nicht beschreibbar: $script_path" "Script file is not writable: $script_path")" >&2
+        return 0
+    }
+
+    tmp_dir=$(mktemp -d)
+    remote_file="$tmp_dir/maintenance.sh"
+    trap 'rm -rf -- "$tmp_dir"' RETURN
+
+    if ! curl -fsSL --connect-timeout "$SCRIPT_UPDATE_TIMEOUT" --max-time "$((SCRIPT_UPDATE_TIMEOUT * 2))"         "$SCRIPT_UPDATE_URL" -o "$remote_file"; then
+        [[ "$force" == true ]] && printf '❌ %s\n' "$(text "Update-Datei konnte nicht geladen werden." "Could not download the update file.")" >&2
+        return 0
+    fi
+
+    remote_version=$(sed -nE 's/^SCRIPT_VERSION="([^"]+)".*/\1/p' "$remote_file" | head -n1)
+    if [[ -z "$remote_version" ]]; then
+        printf '⚠️ %s\n' "$(text "Die heruntergeladene Datei enthält keine gültige SCRIPT_VERSION." "The downloaded file does not contain a valid SCRIPT_VERSION.")" >&2
+        return 0
+    fi
+
+    if ! version_is_greater "$remote_version" "$SCRIPT_VERSION"; then
+        [[ "$force" == true ]] && printf '✅ %s %s\n' "$(text "Das Skript ist aktuell. Version:" "The script is up to date. Version:")" "$SCRIPT_VERSION"
+        return 0
+    fi
+
+    printf '⬆️  %s: %s → %s\n' "$(text "Neue Skriptversion verfügbar" "New script version available")" "$SCRIPT_VERSION" "$remote_version"
+    if [[ "$mode" == auto ]]; then
+        answer=yes
+    else
+        answer=$(prompt_yes_no "$(text "Maintenance Tool jetzt aktualisieren?" "Update the Maintenance Tool now?")" ask yes)
+    fi
+    [[ "$answer" == yes ]] || return 0
+
+    if ! bash -n "$remote_file"; then
+        printf '❌ %s\n' "$(text "Das heruntergeladene Skript hat Syntaxfehler. Update abgebrochen." "The downloaded script has syntax errors. Update cancelled.")" >&2
+        return 1
+    fi
+
+    backup_file="${script_path}.bak-${SCRIPT_VERSION}-$(date +%Y%m%d-%H%M%S)"
+    cp -p -- "$script_path" "$backup_file"
+    chmod --reference="$script_path" "$remote_file" 2>/dev/null || chmod +x "$remote_file"
+    if ! mv -f -- "$remote_file" "$script_path"; then
+        printf '❌ %s\n' "$(text "Skript konnte nicht ersetzt werden. Sicherung: $backup_file" "Could not replace the script. Backup: $backup_file")" >&2
+        return 1
+    fi
+
+    trap - RETURN
+    rm -rf -- "$tmp_dir"
+    printf '✅ %s %s\n' "$(text "Skript aktualisiert auf Version" "Script updated to version")" "$remote_version"
+    printf 'ℹ️ %s: %s\n' "$(text "Sicherung" "Backup")" "$backup_file"
+    printf '🔄 %s\n' "$(text "Das aktualisierte Skript wird neu gestartet …" "Restarting the updated script …")"
+    exec "$script_path" "$@"
 }
 
 prompt_yes_no() {
@@ -1452,6 +1534,7 @@ show_main_menu() {
     printf '[5] %s\n' "$(text "Containerverwaltung" "Container management")"
     printf '[6] %s\n' "$(text "Systemdiagnose" "System diagnostics")"
     printf '[7] %s\n' "$(text "Systembereinigung" "System cleanup")"
+    printf '[8] %s\n' "$(text "Skript-Update prüfen" "Check for script update")"
     printf '[0] %s\n' "$(text "Beenden" "Exit")"
 }
 
@@ -1468,6 +1551,7 @@ main_menu() {
             5) container_management_menu ;;
             6) system_diagnostics ;;
             7) system_cleanup_menu ;;
+            8) check_script_update true; pause_menu ;;
             0) printf '%s\n' "$(text "Beendet." "Exited.")"; return 0 ;;
             *) printf '⚠️ %s\n' "$(text "Ungültige Auswahl." "Invalid selection.")" ;;
         esac
@@ -1475,6 +1559,14 @@ main_menu() {
 }
 
 main() {
+    if [[ "$DIRECT_ACTION" == --self-update ]]; then
+        check_script_update true "$@"
+        exit $?
+    fi
+
+    # Check for a newer Maintenance Tool version before loading container data.
+    check_script_update false "$@"
+
     if [[ "$SHOW_SCRIPT_INFO" == true && "$QUIET" != true ]]; then
         echo "========================================================="
         printf '        %s v%s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION"
