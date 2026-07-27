@@ -13,6 +13,26 @@ The tool provides an interactive menu for managing:
 
 ---
 
+## What's New in 2.3
+
+- Maintenance script self-update
+- Automatic maintenance.conf creation and migration
+- Dynamic diagnostics for Pangolin and Traefik ports
+- Raw Resource port validation
+- Container uptime reporting
+- Automatic dashboard URL detection
+- HTTP/HTTPS connectivity tests
+- Improved UDP diagnostics
+
+## Configuration
+
+The tool automatically creates `maintenance.conf` on first start.
+
+During future updates it preserves all user values, automatically adds new
+configuration options, updates documentation/comments and creates
+`maintenance.conf.bak` before changing the configuration.
+
+
 ## Features
 
 ### Update
@@ -200,7 +220,7 @@ Download the script from the raw GitHub URL:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/sandmaennchen5/scripts/main/pangolin/maintenance.sh \
+  https://raw.githubusercontent.com/sandmaennchen5/scripts/refs/heads/main/pangolin/maintenance.sh \
   -o maintenance.sh
 ```
 
@@ -210,7 +230,7 @@ Alternatively:
 
 ```bash
 wget \
-  https://raw.githubusercontent.com/sandmaennchen5/scripts/main/pangolin/maintenance.sh \
+  https://raw.githubusercontent.com/sandmaennchen5/scripts/refs/heads/main/pangolin/maintenance.sh \
   -O maintenance.sh
 ```
 
@@ -264,6 +284,7 @@ The main menu provides access to:
 [5] Container management
 [6] System diagnostics
 [7] System cleanup
+[8] Check for maintenance script update
 [0] Exit
 ```
 
@@ -318,6 +339,7 @@ sudo ./maintenance.sh --stop
 
 ```bash
 sudo ./maintenance.sh --restart
+--self-update
 ```
 
 ---
@@ -380,7 +402,7 @@ Download the current version:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/sandmaennchen5/scripts/main/pangolin/maintenance.sh \
+  https://raw.githubusercontent.com/sandmaennchen5/scripts/refs/heads/main/pangolin/maintenance.sh \
   -o maintenance.sh
 ```
 
@@ -411,7 +433,7 @@ The script can be downloaded and made executable with:
 ```bash
 cd /opt/pangolin && \
 curl -fsSL \
-  https://raw.githubusercontent.com/sandmaennchen5/scripts/main/pangolin/maintenance.sh \
+  https://raw.githubusercontent.com/sandmaennchen5/scripts/refs/heads/main/pangolin/maintenance.sh \
   -o maintenance.sh && \
 chmod +x maintenance.sh
 ```

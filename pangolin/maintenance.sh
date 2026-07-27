@@ -2,7 +2,17 @@
 set -euo pipefail
 
 SCRIPT_NAME="Pangolin Maintenance Tool"
-SCRIPT_VERSION="2.2"
+SCRIPT_VERSION="2.3"
+
+# Persistent user configuration. The self-update process replaces only this
+# script; maintenance.conf remains untouched. On every start the documented
+# template is refreshed atomically while all existing setting values are kept.
+CONFIG_FILE="${CONFIG_FILE:-./maintenance.conf}"
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+fi
 
 LANGUAGE="${LANGUAGE:-en}"                            # de | en
 SHOW_SCRIPT_INFO="${SHOW_SCRIPT_INFO:-true}"          # true | false
@@ -11,7 +21,7 @@ QUIET="${QUIET:-false}"                               # true | false
 UNATTENDED="${UNATTENDED:-false}"                     # true | false
 
 SCRIPT_UPDATE_MODE="${SCRIPT_UPDATE_MODE:-ask}"             # ask | auto | off
-SCRIPT_UPDATE_URL="${SCRIPT_UPDATE_URL:-https://raw.githubusercontent.com/sandmaennchen5/scripts/refs/heads/main/pangolin/maintenance.sh}"
+SCRIPT_UPDATE_URL="${SCRIPT_UPDATE_URL:-https://raw.githubusercontent.com/sandmaennchen5/scripts/main/pangolin/maintenance.sh}"
 SCRIPT_UPDATE_TIMEOUT="${SCRIPT_UPDATE_TIMEOUT:-8}"
 
 UPDATE_MODE="${UPDATE_MODE:-ask}"                     # ask | auto | manual | none
@@ -37,6 +47,243 @@ COMPOSE_FILE="${COMPOSE_FILE:-./docker-compose.yml}"
 ENV_FILE="${ENV_FILE:-./.env}"
 
 case "${LANGUAGE,,}" in de|en) LANGUAGE="${LANGUAGE,,}" ;; *) echo "Invalid LANGUAGE '$LANGUAGE'. Allowed: de, en." >&2; exit 2 ;; esac
+
+
+config_quote() {
+    printf '%q' "$1"
+}
+
+write_config_template() {
+    local output="$1"
+
+    cat > "$output" <<'EOF'
+# Pangolin Maintenance Tool configuration
+#
+# This file is managed by the maintenance script.
+# Existing setting values are preserved when the script adds new options or
+# refreshes these English descriptions. Edit only the assignment values.
+# The script itself may be updated without replacing this file.
+
+# -----------------------------------------------------------------------------
+# General behavior
+# -----------------------------------------------------------------------------
+
+# Interface language.
+# Allowed values: en, de
+EOF
+    printf 'LANGUAGE=%s\n\n' "$(config_quote "$LANGUAGE")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Show script name and version information when starting.
+# Allowed values: true, false
+EOF
+    printf 'SHOW_SCRIPT_INFO=%s\n\n' "$(config_quote "$SHOW_SCRIPT_INFO")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Enable additional diagnostic output from the maintenance script.
+# Allowed values: true, false
+EOF
+    printf 'DEBUG=%s\n\n' "$(config_quote "$DEBUG")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Suppress ordinary informational messages. Errors and required prompts remain.
+# Allowed values: true, false
+EOF
+    printf 'QUIET=%s\n\n' "$(config_quote "$QUIET")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Run without interactive questions and use the configured default choices.
+# Allowed values: true, false
+EOF
+    printf 'UNATTENDED=%s\n\n' "$(config_quote "$UNATTENDED")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# -----------------------------------------------------------------------------
+# Maintenance script self-update
+# -----------------------------------------------------------------------------
+
+# Control the automatic update check performed when the script starts.
+# ask: show a confirmation when a newer version exists
+# auto: install a newer version automatically
+# off: do not check automatically; manual menu checks still work
+# Allowed values: ask, auto, off
+EOF
+    printf 'SCRIPT_UPDATE_MODE=%s\n\n' "$(config_quote "$SCRIPT_UPDATE_MODE")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Raw download URL of the published maintenance script.
+EOF
+    printf 'SCRIPT_UPDATE_URL=%s\n\n' "$(config_quote "$SCRIPT_UPDATE_URL")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Network timeout in seconds used for the self-update request.
+# Must be a positive integer.
+EOF
+    printf 'SCRIPT_UPDATE_TIMEOUT=%s\n\n' "$(config_quote "$SCRIPT_UPDATE_TIMEOUT")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# -----------------------------------------------------------------------------
+# Pangolin component updates
+# -----------------------------------------------------------------------------
+
+# Select how component updates are chosen.
+# ask: prompt for the mode
+# auto: use UPDATE_LEVEL automatically
+# manual: select versions interactively
+# none: do not change component versions
+# Allowed values: ask, auto, manual, none
+EOF
+    printf 'UPDATE_MODE=%s\n\n' "$(config_quote "$UPDATE_MODE")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Maximum version level allowed for automatic component updates.
+# patch: same major and minor version
+# next-minor: exactly the next minor release with patch zero
+# minor: latest release within the current major version
+# next-major: exactly the next major release with minor and patch zero
+# major: latest available release using the same tag variant
+# Allowed values: ask, patch, next-minor, minor, next-major, major
+EOF
+    printf 'UPDATE_LEVEL=%s\n\n' "$(config_quote "$UPDATE_LEVEL")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Default update mode used for unattended execution or an empty answer.
+# Allowed values: auto, manual, none
+EOF
+    printf 'DEFAULT_UPDATE_MODE=%s\n\n' "$(config_quote "$DEFAULT_UPDATE_MODE")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Default automatic update level used for unattended execution or an empty answer.
+# Allowed values: patch, next-minor, minor, next-major, major
+EOF
+    printf 'DEFAULT_UPDATE_LEVEL=%s\n\n' "$(config_quote "$DEFAULT_UPDATE_LEVEL")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Initial filter shown during manual version selection.
+# Allowed values: series, major, all, direct, skip
+EOF
+    printf 'DEFAULT_MANUAL_FILTER=%s\n\n' "$(config_quote "$DEFAULT_MANUAL_FILTER")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Default numbered entry used in manual version lists. Zero means skip.
+EOF
+    printf 'DEFAULT_MANUAL_SELECTION=%s\n\n' "$(config_quote "$DEFAULT_MANUAL_SELECTION")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Ask whether Docker Compose should pull and apply selected component changes.
+# Allowed values: ask, yes, no
+EOF
+    printf 'RUN_COMPOSE=%s\n\n' "$(config_quote "$RUN_COMPOSE")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Default answer for applying Docker Compose changes.
+# Allowed values: yes, no
+EOF
+    printf 'DEFAULT_RUN_COMPOSE=%s\n\n' "$(config_quote "$DEFAULT_RUN_COMPOSE")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# -----------------------------------------------------------------------------
+# Backup and restore behavior
+# -----------------------------------------------------------------------------
+
+# Ask whether containers should be stopped before creating a backup.
+# Allowed values: ask, yes, no
+EOF
+    printf 'STOP_CONTAINERS_FOR_BACKUP=%s\n\n' "$(config_quote "$STOP_CONTAINERS_FOR_BACKUP")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Default answer for stopping containers before a backup.
+# Allowed values: yes, no
+EOF
+    printf 'DEFAULT_STOP_CONTAINERS_FOR_BACKUP=%s\n\n' "$(config_quote "$DEFAULT_STOP_CONTAINERS_FOR_BACKUP")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Default numbered backup selection. Zero returns to the previous menu.
+EOF
+    printf 'DEFAULT_RESTORE_SELECTION=%s\n\n' "$(config_quote "$DEFAULT_RESTORE_SELECTION")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Default answer when selected update changes were not applied and the script
+# offers to restore the YAML files from the automatic backup.
+# Allowed values: yes, no
+EOF
+    printf 'DEFAULT_REVERT_UNAPPLIED_CHANGES=%s\n\n' "$(config_quote "$DEFAULT_REVERT_UNAPPLIED_CHANGES")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Remove backup sets older than this number of days while respecting
+# BACKUP_MIN_KEEP. Use a non-negative integer.
+EOF
+    printf 'BACKUP_RETENTION_DAYS=%s\n\n' "$(config_quote "$BACKUP_RETENTION_DAYS")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Minimum number of newest backup sets that are always retained.
+# Use a non-negative integer.
+EOF
+    printf 'BACKUP_MIN_KEEP=%s\n\n' "$(config_quote "$BACKUP_MIN_KEEP")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# -----------------------------------------------------------------------------
+# Paths
+# -----------------------------------------------------------------------------
+
+# Root directory used for maintenance backups.
+EOF
+    printf 'BACKUP_DIR=%s\n\n' "$(config_quote "$BACKUP_DIR")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Directory containing normal backup sets.
+EOF
+    printf 'BACKUP_SET_DIR=%s\n\n' "$(config_quote "$BACKUP_SET_DIR")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Directory containing safety backups created immediately before a restore.
+EOF
+    printf 'PRE_RESTORE_BACKUP_DIR=%s\n\n' "$(config_quote "$PRE_RESTORE_BACKUP_DIR")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Path to the Traefik static configuration used for plugin and entryPoint checks.
+EOF
+    printf 'TRAEFIK_CONFIG=%s\n\n' "$(config_quote "$TRAEFIK_CONFIG")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Path to the Pangolin Docker Compose file.
+EOF
+    printf 'COMPOSE_FILE=%s\n\n' "$(config_quote "$COMPOSE_FILE")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Path to the environment file included in backups and restores.
+EOF
+    printf 'ENV_FILE=%s\n' "$(config_quote "$ENV_FILE")" >> "$output"
+}
+
+sync_config_file() {
+    local config_dir tmp_file backup_file
+    config_dir=$(dirname -- "$CONFIG_FILE")
+    mkdir -p -- "$config_dir"
+    tmp_file=$(mktemp "${CONFIG_FILE}.tmp.XXXXXX")
+    write_config_template "$tmp_file"
+
+    if [[ -f "$CONFIG_FILE" ]] && cmp -s -- "$tmp_file" "$CONFIG_FILE"; then
+        rm -f -- "$tmp_file"
+        return 0
+    fi
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        backup_file="${CONFIG_FILE}.bak"
+        cp -p -- "$CONFIG_FILE" "$backup_file"
+    fi
+
+    chmod 600 "$tmp_file"
+    mv -f -- "$tmp_file" "$CONFIG_FILE"
+
+    if [[ -n "${backup_file:-}" ]]; then
+        printf 'ℹ️ Configuration documentation updated; values preserved. Backup: %s\n' "$backup_file"
+    else
+        printf 'ℹ️ Configuration file created: %s\n' "$CONFIG_FILE"
+    fi
+}
+
+sync_config_file
 
 text() { if [[ "$LANGUAGE" == de ]]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
 normalize_true_false() { case "${1,,}" in true|1|yes|y|ja|j|on) printf 'true\n';; false|0|no|n|nein|off) printf 'false\n';; *) return 1;; esac; }
