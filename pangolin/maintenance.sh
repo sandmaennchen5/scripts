@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="Pangolin Maintenance Tool"
-SCRIPT_VERSION="2.3"
+SCRIPT_VERSION="2.4"
 
 # Persistent user configuration. The self-update process replaces only this
 # script; maintenance.conf remains untouched. On every start the documented
@@ -21,8 +21,10 @@ QUIET="${QUIET:-false}"                               # true | false
 UNATTENDED="${UNATTENDED:-false}"                     # true | false
 
 SCRIPT_UPDATE_MODE="${SCRIPT_UPDATE_MODE:-ask}"             # ask | auto | off
-SCRIPT_UPDATE_URL="${SCRIPT_UPDATE_URL:-https://raw.githubusercontent.com/sandmaennchen5/scripts/main/pangolin/maintenance.sh}"
+SCRIPT_UPDATE_URL="${SCRIPT_UPDATE_URL:-https://raw.githubusercontent.com/sandmaennchen5/scripts/refs/heads/main/pangolin/maintenance.sh}"
 SCRIPT_UPDATE_TIMEOUT="${SCRIPT_UPDATE_TIMEOUT:-8}"
+ENABLE_EXTERNAL_TCP_TEST="${ENABLE_EXTERNAL_TCP_TEST:-true}"
+TCP_TEST_TIMEOUT="${TCP_TEST_TIMEOUT:-5}"
 
 UPDATE_MODE="${UPDATE_MODE:-ask}"                     # ask | auto | manual | none
 UPDATE_LEVEL="${UPDATE_LEVEL:-ask}"                   # ask | patch | next-minor | minor | next-major | major
@@ -120,6 +122,18 @@ EOF
 # Must be a positive integer.
 EOF
     printf 'SCRIPT_UPDATE_TIMEOUT=%s\n\n' "$(config_quote "$SCRIPT_UPDATE_TIMEOUT")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Enable the public TCP reachability check for published TCP ports.
+# Allowed values: true, false
+EOF
+    printf 'ENABLE_EXTERNAL_TCP_TEST=%s\n\n' "$(config_quote "$ENABLE_EXTERNAL_TCP_TEST")" >> "$output"
+
+    cat >> "$output" <<'EOF'
+# Timeout in seconds for each TCP reachability check.
+# Must be a positive integer.
+EOF
+    printf 'TCP_TEST_TIMEOUT=%s\n\n' "$(config_quote "$TCP_TEST_TIMEOUT")" >> "$output"
 
     cat >> "$output" <<'EOF'
 # -----------------------------------------------------------------------------
@@ -1676,15 +1690,121 @@ host_port_listener() {
     fi
 }
 
+get_pangolin_tunnel_ports() {
+    local config_file="./config/config.yml" site_port="51820" client_port="21820"
+    if [[ -f "$config_file" ]]; then
+        site_port=$(yq -r '.gerbil.start_port // 51820' "$config_file" 2>/dev/null || printf '51820')
+        client_port=$(yq -r '.gerbil.clients_start_port // 21820' "$config_file" 2>/dev/null || printf '21820')
+    fi
+    [[ "$site_port" =~ ^[0-9]+$ ]] || site_port="51820"
+    [[ "$client_port" =~ ^[0-9]+$ ]] || client_port="21820"
+    printf '%s\t%s\n' "$site_port" "$client_port"
+}
+
+FIREWALL_TYPE="none"
+FIREWALL_NAME=""
+
+detect_host_firewall() {
+    FIREWALL_TYPE="none"
+    FIREWALL_NAME=""
+
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^Status: active'; then
+        FIREWALL_TYPE="ufw"; FIREWALL_NAME="UFW"; return 0
+    fi
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -qx running; then
+        FIREWALL_TYPE="firewalld"; FIREWALL_NAME="firewalld"; return 0
+    fi
+    if command -v nft >/dev/null 2>&1 && nft list ruleset 2>/dev/null | grep -Eq 'hook[[:space:]]+input'; then
+        FIREWALL_TYPE="nftables"; FIREWALL_NAME="nftables"; return 0
+    fi
+    if command -v iptables >/dev/null 2>&1 && iptables -S INPUT 2>/dev/null | grep -Eq '^-P INPUT (DROP|REJECT)|^-A INPUT '; then
+        FIREWALL_TYPE="iptables"; FIREWALL_NAME="iptables"; return 0
+    fi
+    return 1
+}
+
+# Return values: 0=explicitly allowed, 1=blocked/no matching allow, 2=unknown.
+firewall_port_status() {
+    local port="$1" protocol="$2" rules default_zone
+    case "$FIREWALL_TYPE" in
+        ufw)
+            rules=$(ufw status 2>/dev/null || true)
+            grep -Eiq "(^|[[:space:]])${port}/${protocol}([[:space:]]|$).*ALLOW" <<<"$rules" && return 0
+            grep -Eiq "(^|[[:space:]])${port}([[:space:]]|$).*ALLOW" <<<"$rules" && return 0
+            grep -Eiq "(^|[[:space:]])${port}/${protocol}([[:space:]]|$).*(DENY|REJECT)" <<<"$rules" && return 1
+            return 2
+            ;;
+        firewalld)
+            default_zone=$(firewall-cmd --get-default-zone 2>/dev/null || true)
+            [[ -n "$default_zone" ]] || return 2
+            firewall-cmd --zone="$default_zone" --query-port="${port}/${protocol}" >/dev/null 2>&1 && return 0
+            # Standard services may open the port without a direct port rule.
+            [[ "$protocol/$port" == "tcp/80" ]] && firewall-cmd --zone="$default_zone" --query-service=http >/dev/null 2>&1 && return 0
+            [[ "$protocol/$port" == "tcp/443" ]] && firewall-cmd --zone="$default_zone" --query-service=https >/dev/null 2>&1 && return 0
+            return 1
+            ;;
+        nftables)
+            rules=$(nft list ruleset 2>/dev/null || true)
+            grep -Eiq "${protocol}[[:space:]]+dport[[:space:]]+(${port}|\{[^}]*\b${port}\b[^}]*\}).*(accept|counter.*accept)" <<<"$rules" && return 0
+            grep -Eiq "${protocol}[[:space:]]+dport[[:space:]]+(${port}|\{[^}]*\b${port}\b[^}]*\}).*(drop|reject)" <<<"$rules" && return 1
+            return 2
+            ;;
+        iptables)
+            rules=$(iptables -S INPUT 2>/dev/null || true)
+            grep -Eiq -- "-p ${protocol} .*--dport ${port} .*-(j|g) ACCEPT" <<<"$rules" && return 0
+            grep -Eiq -- "-p ${protocol} .*--dport ${port} .*-(j|g) (DROP|REJECT)" <<<"$rules" && return 1
+            grep -q '^-P INPUT ACCEPT' <<<"$rules" && return 0
+            return 2
+            ;;
+        *) return 2 ;;
+    esac
+}
+
+print_firewall_port_result() {
+    local port="$1" protocol="$2" warnings_ref="$3" status
+    if firewall_port_status "$port" "$protocol"; then
+        printf '    [✓] %s %s %s\n' "${protocol^^}" "$port" "$(text "durch Host-Firewall erlaubt" "allowed by host firewall")"
+    else
+        status=$?
+        if (( status == 1 )); then
+            printf '    [!] %s %s %s\n' "${protocol^^}" "$port" "$(text "nicht erlaubt oder blockiert" "not allowed or blocked")"
+            eval "$warnings_ref=$(( ${!warnings_ref} + 1 ))"
+        else
+            printf '    [i] %s %s %s\n' "${protocol^^}" "$port" "$(text "Regel nicht eindeutig bestimmbar" "rule could not be determined reliably")"
+        fi
+    fi
+}
+
+check_host_firewall() {
+    local warnings_ref="$1" site_port="$2" client_port="$3" has_quic="$4"
+    echo
+    printf '%s\n' "$(text "Host-Firewall" "Host firewall")"
+    echo "────────────────────────────────────────────────────────"
+    if ! detect_host_firewall; then
+        printf '[i] %s\n' "$(text "Keine aktive Host-Firewall erkannt." "No active host firewall detected.")"
+        return 0
+    fi
+    printf '[✓] %s %s\n' "$FIREWALL_NAME" "$(text "aktiv" "active")"
+    print_firewall_port_result 80 tcp "$warnings_ref"
+    print_firewall_port_result 443 tcp "$warnings_ref"
+    print_firewall_port_result "$site_port" udp "$warnings_ref"
+    print_firewall_port_result "$client_port" udp "$warnings_ref"
+    [[ "$has_quic" == true ]] && print_firewall_port_result 443 udp "$warnings_ref"
+}
+
 check_pangolin_ports() {
-    local dashboard_url="$1" host="$2" problems_ref="$3"
-    local published target protocol label required raw name ep_port ep_protocol
-    local -a standard=("51820:udp:site tunnel" "21820:udp:client tunnel" "80:tcp:non-SSL resources" "443:tcp:SSL resources")
+    local dashboard_url="$1" host="$2" errors_ref="$3" warnings_ref="$4"
+    local published target protocol label required raw name ep_port ep_protocol site_port client_port has_quic=false
+    local -a standard=()
     local -A gerbil_map=() entry_map=()
+
+    IFS=$'\t' read -r site_port client_port < <(get_pangolin_tunnel_ports)
+    standard=("${site_port}:udp:site tunnel" "${client_port}:udp:client tunnel" "80:tcp:non-SSL resources" "443:tcp:SSL resources")
 
     while IFS=$'\t' read -r published target protocol; do
         [[ -n "$published" ]] || continue
         gerbil_map["$published/$protocol"]="$target"
+        [[ "$published/$protocol" == "443/udp" ]] && has_quic=true
     done < <(collect_gerbil_ports)
     while IFS=$'\t' read -r name ep_port ep_protocol; do
         [[ -n "$ep_port" ]] || continue
@@ -1700,25 +1820,46 @@ check_pangolin_ports() {
             printf '[✓] %-9s %-22s %s\n' "$published/$protocol" "$label" "$(text "in Gerbil veröffentlicht" "published by Gerbil")"
         else
             printf '[✗] %-9s %-22s %s\n' "$published/$protocol" "$label" "$(text "fehlt in Gerbil" "missing from Gerbil")"
-            eval "$problems_ref=$(( ${!problems_ref} + 1 ))"
+            eval "$errors_ref=$(( ${!errors_ref} + 1 ))"
             continue
         fi
         if host_port_listener "$published" "$protocol"; then
             printf '    [✓] %s\n' "$(text "Host-Listener aktiv" "host listener active")"
         else
             printf '    [✗] %s\n' "$(text "kein Host-Listener erkannt" "no host listener detected")"
-            eval "$problems_ref=$(( ${!problems_ref} + 1 ))"
+            eval "$errors_ref=$(( ${!errors_ref} + 1 ))"
         fi
-        if [[ "$protocol" == tcp && -n "$host" ]]; then
-            if timeout 5 bash -c "</dev/tcp/$host/$published" >/dev/null 2>&1; then
+        if [[ "$protocol" == tcp && -n "$host" && "$ENABLE_EXTERNAL_TCP_TEST" == true ]]; then
+            if timeout "$TCP_TEST_TIMEOUT" bash -c "</dev/tcp/$host/$published" >/dev/null 2>&1; then
                 printf '    [✓] %s:%s %s\n' "$host" "$published" "$(text "per TCP erreichbar" "reachable via TCP")"
             else
-                printf '    [!] %s:%s %s\n' "$host" "$published" "$(text "von diesem Host nicht per TCP erreichbar" "not reachable via TCP from this host")"
+                printf '    [!] %s:%s %s\n' "$host" "$published" "$(text "TCP-Erreichbarkeit von diesem Host fehlgeschlagen" "TCP reachability from this host failed")"
+                eval "$warnings_ref=$(( ${!warnings_ref} + 1 ))"
             fi
-        elif [[ "$protocol" == udp ]]; then
-            printf '    [i] %s\n' "$(text "UDP: Veröffentlichung und lokaler Listener geprüft; ein externer Handshake ist ohne Gegenstelle nicht verlässlich testbar." "UDP: publication and local listener checked; an external handshake cannot be verified reliably without a peer.")"
+        elif [[ "$protocol" == tcp ]]; then
+            printf '    [i] %s\n' "$(text "Externer TCP-Test deaktiviert oder kein Dashboard-Host erkannt." "External TCP test disabled or no dashboard host detected.")"
+        else
+            printf '    [i] %s\n' "$(text "Externe UDP-Erreichbarkeit kann nicht automatisch geprüft werden." "External UDP connectivity cannot be verified automatically.")"
+            printf '    [i] %s\n' "$(text "Externe Cloud-/Provider-Firewalls können für UDP nicht automatisch geprüft werden." "External cloud/provider firewalls cannot be verified automatically for UDP.")"
         fi
     done
+
+    if [[ "$has_quic" == true ]]; then
+        echo
+        printf '[✓] %-9s %-22s %s\n' '443/udp' 'HTTP/3 / QUIC' "$(text "optional, in Gerbil veröffentlicht" "optional, published by Gerbil")"
+        if host_port_listener 443 udp; then
+            printf '    [✓] %s\n' "$(text "Host-Listener aktiv" "host listener active")"
+        else
+            printf '    [!] %s\n' "$(text "kein Host-Listener erkannt" "no host listener detected")"
+            eval "$warnings_ref=$(( ${!warnings_ref} + 1 ))"
+        fi
+        printf '    [i] %s\n' "$(text "Externe UDP-Erreichbarkeit kann nicht automatisch geprüft werden." "External UDP connectivity cannot be verified automatically.")"
+    else
+        echo
+        printf '[i] %-9s %-22s %s\n' '443/udp' 'HTTP/3 / QUIC' "$(text "optional, nicht aktiviert" "optional, not enabled")"
+    fi
+
+    check_host_firewall "$warnings_ref" "$site_port" "$client_port" "$has_quic"
 
     echo
     printf '%s\n' "$(text "Raw-Resource-Portabgleich" "Raw resource port consistency")"
@@ -1726,7 +1867,9 @@ check_pangolin_ports() {
     required=0
     while IFS=$'\t' read -r published target protocol; do
         [[ -n "$published" ]] || continue
-        case "$published/$protocol" in 51820/udp|21820/udp|80/tcp|443/tcp) continue ;; esac
+        case "$published/$protocol" in
+            "$site_port/udp"|"$client_port/udp"|80/tcp|443/tcp|443/udp) continue ;;
+        esac
         required=1
         name="${entry_map[$target/$protocol]:-${entry_map[$published/$protocol]:-}}"
         printf '• Gerbil %-9s → container %-9s' "$published/$protocol" "$target/$protocol"
@@ -1734,7 +1877,7 @@ check_pangolin_ports() {
             printf ' [✓] Traefik entryPoint: %s\n' "$name"
         else
             printf ' [✗] %s\n' "$(text "kein passender Traefik-entryPoint" "no matching Traefik entryPoint")"
-            eval "$problems_ref=$(( ${!problems_ref} + 1 ))"
+            eval "$errors_ref=$(( ${!errors_ref} + 1 ))"
         fi
         if [[ "$protocol" == tcp && "$name" != tcp-* ]]; then
             printf '    [!] %s\n' "$(text "Empfohlener Name: tcp-$target" "Recommended name: tcp-$target")"
@@ -1745,7 +1888,7 @@ check_pangolin_ports() {
             printf '    [✓] %s\n' "$(text "Host-Listener aktiv" "host listener active")"
         else
             printf '    [✗] %s\n' "$(text "kein Host-Listener erkannt" "no host listener detected")"
-            eval "$problems_ref=$(( ${!problems_ref} + 1 ))"
+            eval "$errors_ref=$(( ${!errors_ref} + 1 ))"
         fi
     done < <(collect_gerbil_ports)
     (( required == 1 )) || printf '[–] %s\n' "$(text "Keine zusätzlichen Raw-Resource-Ports gefunden." "No additional raw resource ports found.")"
@@ -1754,22 +1897,22 @@ check_pangolin_ports() {
         [[ "$name" == tcp-* || "$name" == udp-* ]] || continue
         if [[ -z "${gerbil_map[$ep_port/$ep_protocol]:-}" ]]; then
             printf '[!] Traefik %-18s %s/%s — %s\n' "$name" "$ep_port" "$ep_protocol" "$(text "nicht in Gerbil veröffentlicht" "not published by Gerbil")"
-            eval "$problems_ref=$(( ${!problems_ref} + 1 ))"
+            eval "$warnings_ref=$(( ${!warnings_ref} + 1 ))"
         fi
     done < <(collect_traefik_entrypoints)
 }
 
 system_diagnostics() {
-    local problems=0 service ps_json state health status image url answer dashboard_url host
+    local errors=0 warnings=0 service ps_json state health status image url answer dashboard_url host
     local compose_ok=false traefik_ok=false
     echo
     echo "════════════════════════════════════════════════════════"
     printf '                 %s\n' "$(text "Systemdiagnose" "System diagnostics")"
     echo "════════════════════════════════════════════════════════"
 
-    if docker info >/dev/null 2>&1; then printf '[✓] %s\n' "$(text "Docker-Daemon erreichbar" "Docker daemon reachable")"; else printf '[✗] %s\n' "$(text "Docker-Daemon nicht erreichbar" "Docker daemon not reachable")"; ((problems+=1)); fi
-    if docker compose version >/dev/null 2>&1; then printf '[✓] %s\n' "$(text "Docker Compose verfügbar" "Docker Compose available")"; else printf '[✗] %s\n' "$(text "Docker Compose nicht verfügbar" "Docker Compose unavailable")"; ((problems+=1)); fi
-    if [[ -S /var/run/docker.sock ]]; then printf '[✓] %s\n' "$(text "Docker-Socket vorhanden" "Docker socket present")"; else printf '[!] %s\n' "$(text "Docker-Socket /var/run/docker.sock nicht gefunden" "Docker socket /var/run/docker.sock not found")"; ((problems+=1)); fi
+    if docker info >/dev/null 2>&1; then printf '[✓] %s\n' "$(text "Docker-Daemon erreichbar" "Docker daemon reachable")"; else printf '[✗] %s\n' "$(text "Docker-Daemon nicht erreichbar" "Docker daemon not reachable")"; ((errors+=1)); fi
+    if docker compose version >/dev/null 2>&1; then printf '[✓] %s\n' "$(text "Docker Compose verfügbar" "Docker Compose available")"; else printf '[✗] %s\n' "$(text "Docker Compose nicht verfügbar" "Docker Compose unavailable")"; ((errors+=1)); fi
+    if [[ -S /var/run/docker.sock ]]; then printf '[✓] %s\n' "$(text "Docker-Socket vorhanden" "Docker socket present")"; else printf '[!] %s\n' "$(text "Docker-Socket /var/run/docker.sock nicht gefunden" "Docker socket /var/run/docker.sock not found")"; ((errors+=1)); fi
 
     echo
     printf '%s\n' "$(text "Container" "Containers")"
@@ -1777,21 +1920,21 @@ system_diagnostics() {
     while IFS= read -r service; do
         [[ -n "$service" ]] || continue
         ps_json=$(docker compose -f "$COMPOSE_FILE" ps -a --format json "$service" 2>/dev/null || true)
-        if [[ -z "$ps_json" ]]; then printf '[✗] %-22s %s\n' "$service" "$(text "nicht erstellt" "not created")"; ((problems+=1)); continue; fi
+        if [[ -z "$ps_json" ]]; then printf '[✗] %-22s %s\n' "$service" "$(text "nicht erstellt" "not created")"; ((errors+=1)); continue; fi
         state=$(printf '%s\n' "$ps_json" | jq -r 'if type=="array" then (.[0].State // "unknown") else (.State // "unknown") end' 2>/dev/null || printf 'unknown')
         health=$(printf '%s\n' "$ps_json" | jq -r 'if type=="array" then (.[0].Health // "") else (.Health // "") end' 2>/dev/null || true)
         status=$(printf '%s\n' "$ps_json" | jq -r 'if type=="array" then (.[0].Status // "") else (.Status // "") end' 2>/dev/null || true)
         case "${state,,}" in
             running)
                 if [[ "${health,,}" == unhealthy ]]; then
-                    printf '[✗] %-22s %-28s | health=%s\n' "$service" "${status:-Up}" "$health"; ((problems+=1))
+                    printf '[✗] %-22s %-28s | health=%s\n' "$service" "${status:-Up}" "$health"; ((errors+=1))
                 elif [[ -n "$health" ]]; then
                     printf '[✓] %-22s %-28s | health=%s\n' "$service" "${status:-Up}" "$health"
                 else
                     printf '[✓] %-22s %-28s | Running\n' "$service" "${status:-Up}"
                 fi ;;
-            restarting|exited|dead|paused) printf '[✗] %-22s %s\n' "$service" "${status:-$state}"; ((problems+=1)) ;;
-            *) printf '[!] %-22s %s\n' "$service" "${status:-$state}"; ((problems+=1)) ;;
+            restarting|exited|dead|paused) printf '[✗] %-22s %s\n' "$service" "${status:-$state}"; ((errors+=1)) ;;
+            *) printf '[!] %-22s %s\n' "$service" "${status:-$state}"; ((errors+=1)) ;;
         esac
     done < <(compose_services)
 
@@ -1800,16 +1943,16 @@ system_diagnostics() {
     echo "────────────────────────────────────────────────────────"
     while IFS= read -r image; do
         [[ -n "$image" ]] || continue
-        if docker image inspect "$image" >/dev/null 2>&1; then printf '[✓] %s\n' "$image"; else printf '[✗] %s — %s\n' "$image" "$(text "fehlt" "missing")"; ((problems+=1)); fi
+        if docker image inspect "$image" >/dev/null 2>&1; then printf '[✓] %s\n' "$image"; else printf '[✗] %s — %s\n' "$image" "$(text "fehlt" "missing")"; ((errors+=1)); fi
     done < <(compose_images)
 
     echo
     printf '%s\n' "$(text "Konfiguration" "Configuration")"
     echo "────────────────────────────────────────────────────────"
-    if docker compose -f "$COMPOSE_FILE" config -q >/dev/null 2>&1; then printf '[✓] %s\n' "$COMPOSE_FILE"; compose_ok=true; else printf '[✗] %s — %s\n' "$COMPOSE_FILE" "$(text "ungültig" "invalid")"; ((problems+=1)); fi
-    if [[ -f "$TRAEFIK_CONFIG" ]] && yq '.' "$TRAEFIK_CONFIG" >/dev/null 2>&1; then printf '[✓] %s\n' "$TRAEFIK_CONFIG"; traefik_ok=true; else printf '[✗] %s — %s\n' "$TRAEFIK_CONFIG" "$(text "fehlt oder ungültig" "missing or invalid")"; ((problems+=1)); fi
-    [[ -f "$ENV_FILE" ]] && printf '[✓] %s\n' "$ENV_FILE" || { printf '[!] %s — %s\n' "$ENV_FILE" "$(text "fehlt" "missing")"; ((problems+=1)); }
-    [[ -d ./config ]] && printf '[✓] %s\n' './config' || { printf '[!] %s — %s\n' './config' "$(text "fehlt" "missing")"; ((problems+=1)); }
+    if docker compose -f "$COMPOSE_FILE" config -q >/dev/null 2>&1; then printf '[✓] %s\n' "$COMPOSE_FILE"; compose_ok=true; else printf '[✗] %s — %s\n' "$COMPOSE_FILE" "$(text "ungültig" "invalid")"; ((errors+=1)); fi
+    if [[ -f "$TRAEFIK_CONFIG" ]] && yq '.' "$TRAEFIK_CONFIG" >/dev/null 2>&1; then printf '[✓] %s\n' "$TRAEFIK_CONFIG"; traefik_ok=true; else printf '[✗] %s — %s\n' "$TRAEFIK_CONFIG" "$(text "fehlt oder ungültig" "missing or invalid")"; ((errors+=1)); fi
+    [[ -f "$ENV_FILE" ]] && printf '[✓] %s\n' "$ENV_FILE" || printf '[i] %s — %s\n' "$ENV_FILE" "$(text "optional, nicht vorhanden" "optional, not present")"
+    [[ -d ./config ]] && printf '[✓] %s\n' './config' || { printf '[!] %s — %s\n' './config' "$(text "fehlt" "missing")"; ((errors+=1)); }
 
     dashboard_url=$(get_dashboard_url 2>/dev/null || true)
     host=""; [[ -n "$dashboard_url" ]] && host=$(url_host "$dashboard_url")
@@ -1820,22 +1963,23 @@ system_diagnostics() {
         printf '[✓] dashboard_url: %s\n' "$dashboard_url"
         answer=$(prompt_yes_no "$(text "HTTP- und HTTPS-Test ausführen?" "Run HTTP and HTTPS tests?")" ask yes)
         if [[ "$answer" == yes ]]; then
-            http_probe "http://$host" || ((problems+=1))
-            http_probe "https://$host" || ((problems+=1))
+            http_probe "http://$host" || ((errors+=1))
+            http_probe "https://$host" || ((errors+=1))
         else
             printf '[–] %s\n' "$(text "HTTP/HTTPS-Test übersprungen" "HTTP/HTTPS test skipped")"
         fi
     else
         printf '[✗] %s\n' "$(text "app.dashboard_url in ./config/config.yml nicht gefunden" "app.dashboard_url not found in ./config/config.yml")"
-        ((problems+=1))
+        ((errors+=1))
     fi
 
-    check_pangolin_ports "$dashboard_url" "$host" problems
+    check_pangolin_ports "$dashboard_url" "$host" errors warnings
 
     echo
     echo "────────────────────────────────────────────────────────"
-    printf '%s: %d\n' "$(text "Gefundene Probleme" "Problems found")" "$problems"
-    (( problems == 0 ))
+    printf '%s: %d\n' "$(text "Fehler" "Errors")" "$errors"
+    printf '%s: %d\n' "$(text "Warnungen" "Warnings")" "$warnings"
+    (( errors == 0 ))
 }
 
 outdated_compose_images() {

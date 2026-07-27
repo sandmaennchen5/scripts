@@ -1,222 +1,319 @@
 # Pangolin Maintenance Tool
 
-A comprehensive maintenance utility for **Pangolin** installations.
+> **Version 2.4**
 
-The tool provides an interactive menu for managing:
+A comprehensive Bash utility for maintaining and diagnosing self-hosted **Pangolin** installations.
 
-* Updates
-* Backups
-* Restores
-* Container operations
-* System diagnostics
-* Docker image cleanup
+It provides one interactive tool for updates, backups, restores, container operations, diagnostics, cleanup, configuration migration, and safe self-updates.
 
----
+## What's New in 2.4
 
-## What's New in 2.3
-
-- Maintenance script self-update
-- Automatic maintenance.conf creation and migration
-- Dynamic diagnostics for Pangolin and Traefik ports
-- Raw Resource port validation
-- Container uptime reporting
-- Automatic dashboard URL detection
-- HTTP/HTTPS connectivity tests
-- Improved UDP diagnostics
-
-## Configuration
-
-The tool automatically creates `maintenance.conf` on first start.
-
-During future updates it preserves all user values, automatically adds new
-configuration options, updates documentation/comments and creates
-`maintenance.conf.bak` before changing the configuration.
-
+- Host firewall detection and port-rule checks
+  - UFW
+  - firewalld
+  - nftables
+  - iptables
+- Dynamic firewall validation for detected Pangolin ports
+- Optional TCP reachability checks
+- `.env` is treated as optional during diagnostics
+- `443/udp` is recognized as the optional Pangolin HTTP/3 / QUIC port
+- `443/udp` is excluded from Raw Resource consistency checks
+- Clear separation between errors, warnings, and informational UDP limitations
+- Updated self-update URL and configuration migration
 
 ## Features
 
-### Update
+### Updates
 
-* Checks Pangolin and Gerbil versions
-* Updates Docker image references
-* Creates an automatic backup before updating
-* Pulls new images
-* Restarts the Pangolin stack
-* Rolls back when an update fails
+- Checks available Pangolin and Gerbil versions
+- Supports automatic, manual, and filtered version selection
+- Creates a backup before applying updates
+- Updates Docker image references
+- Pulls the selected images
+- Restarts the Pangolin stack
+- Reverts unapplied changes when requested
+- Supports unattended operation through `maintenance.conf`
 
 ### Backup
 
-Creates backups of the Pangolin installation, including:
+Backups can include:
 
-* `config/`
-* `docker-compose.yml`
-* `.env`
-* `traefik_config.yml`
-* `branding/`
+- `config/`
+- `docker-compose.yml`
+- optional `.env`
+- Traefik configuration
+- branding files
 
-Each backup includes a `metadata.json` file containing:
+Each backup contains a `metadata.json` file with information such as:
 
-* Creation date
-* Script version
-* Hostname
-* User
-* Working directory
-* Operating system
-* Kernel
-* Architecture
-* Docker version
-* Docker Compose version
-* Container versions
-* Traefik plugin versions
-* Included files
-* Checksums
-* Backup size
-* Backup type
+- Creation date
+- Script version
+- Hostname and user
+- Working directory
+- Operating system, kernel, and architecture
+- Docker and Docker Compose versions
+- Container images and versions
+- Traefik plugins
+- Included files and checksums
+- Backup size and type
 
 ### Restore
 
-The interactive restore menu lists available backups with:
+The interactive restore menu displays:
 
-* Backup date
-* Pangolin version
-* Gerbil version
-* Backup size
-* Backup type
+- Backup date
+- Pangolin version
+- Gerbil version
+- Backup size
+- Backup type
 
-After selecting a backup, the tool displays detailed information before restoring:
+Before restoring, the tool can show detailed metadata including host information, container versions, plugins, system data, included files, and backup information.
 
-* Host information
-* All container versions
-* All Traefik plugin versions
-* Docker and Docker Compose versions
-* Operating system
-* Kernel
-* Architecture
-* Included files
-* Backup size
-
-Older backups using the previous metadata format remain supported.
+Older backup metadata formats remain supported.
 
 ### Container Management
 
-The complete Pangolin Docker Compose stack can be managed directly from the menu.
+The complete Docker Compose stack can be managed from the menu or CLI:
 
-Available actions:
-
-* Start all containers
-* Stop all containers
-* Restart all containers
-* Display container status
-* Display logs for a selected container
+- Start containers
+- Stop containers
+- Restart containers
+- Show status
+- Show logs
 
 ### System Diagnostics
 
-The diagnostic function checks:
+The diagnostic module checks the following areas.
 
 #### Docker
 
-* Docker daemon availability
-* Docker Compose availability
-* Docker socket access
+- Docker daemon availability
+- Docker Compose availability
+- Docker socket access
+- Compose configuration validity
 
-#### Containers
+#### Containers and Images
 
-* Running containers
-* Restarting containers
-* Exited containers
-* Dead containers
-* Missing containers
-* Docker health-check status
-
-#### Images
-
-* Missing local images
-* Missing image tags
-* Compose image availability
+- Container state
+- Restarting, exited, dead, or missing containers
+- Docker health-check status
+- Container uptime
+- Missing local images or tags
 
 #### Configuration
 
-* `docker-compose.yml`
-* `traefik_config.yml`
-* `.env`
-* `config/`
+- `docker-compose.yml`
+- `config/`
+- Traefik configuration
+- optional `.env`
 
-The Compose configuration is validated using:
+A missing `.env` is reported as informational and is not counted as an error.
 
-```bash
-docker compose config -q
+#### Dashboard
+
+The dashboard URL is detected from:
+
+```yaml
+app:
+  dashboard_url:
 ```
 
-#### Pangolin availability
+in `config/config.yml`.
 
-An optional HTTP or HTTPS test can verify whether Pangolin is reachable.
+The tool then performs HTTP and HTTPS reachability checks where possible.
+
+#### Pangolin Ports
+
+Tunnel ports are read dynamically from `config/config.yml`:
+
+```yaml
+gerbil:
+  start_port:
+  clients_start_port:
+```
+
+Traefik entry points are read from:
+
+```text
+config/traefik/traefik_config.yml
+```
+
+Docker Compose short and long port syntax are supported, including explicit host-to-container mappings and protocols.
+
+The standard checks cover:
+
+- `80/tcp` — non-SSL resources
+- `443/tcp` — SSL resources
+- configured site-tunnel UDP port
+- configured client-tunnel UDP port
+- `443/udp` — optional HTTP/3 / QUIC, when published
+
+For every published port, the tool checks the Docker mapping and local host listener.
+
+#### HTTP/3 / QUIC
+
+Pangolin's installation Compose may publish:
+
+```yaml
+- 443:443/udp # For http3 QUIC if desired
+```
+
+The tool therefore treats `443/udp` as an optional Pangolin system port. It is not classified as a Raw Resource port and its absence is not an error.
+
+#### Host Firewall
+
+The tool detects an active host firewall in this order:
+
+1. UFW
+2. firewalld
+3. nftables
+4. iptables
+
+When an active firewall is detected, the tool checks rules for:
+
+- `80/tcp`
+- `443/tcp`
+- detected site-tunnel UDP port
+- detected client-tunnel UDP port
+- optional `443/udp`, when published
+
+Results are classified as allowed, blocked/not allowed, or not reliably determinable.
+
+If no active host firewall is detected, the result is informational rather than an error.
+
+#### TCP and UDP Reachability
+
+When enabled, the script performs a TCP connection test from the Pangolin host to the detected dashboard hostname and published TCP ports.
+
+This test is useful, but depending on DNS, NAT, and provider routing it may not fully reproduce a connection from an unrelated external client.
+
+For UDP, the tool reports:
+
+> External UDP connectivity cannot be verified automatically.
+
+and, where relevant:
+
+> External cloud/provider firewalls cannot be verified automatically for UDP.
+
+UDP has no TCP-style connection handshake. A conclusive inbound test requires a remote peer, client, or test service.
+
+#### Raw Resource Consistency
+
+Additional Gerbil ports are compared with Traefik entry points.
+
+The following Pangolin system ports are excluded from Raw Resource checks:
+
+- configured site-tunnel UDP port
+- configured client-tunnel UDP port
+- `80/tcp`
+- `443/tcp`
+- `443/udp`
+
+#### Diagnostic Summary
+
+The report ends with separate totals:
+
+```text
+Errors: 0
+Warnings: 0
+```
+
+Informational limitations, optional files, and disabled optional features do not count as errors.
 
 ### System Cleanup
 
-The cleanup function safely detects outdated Docker images related to the current Pangolin installation.
+The cleanup module can:
 
-The following images are protected automatically:
+- Remove outdated, unused Compose images
+- Remove dangling images
+- Display Docker disk usage
 
-* Images currently referenced by `docker-compose.yml`
-* Images currently used by existing containers
+The tool protects:
 
-Additional cleanup functions include:
+- Images referenced by the active Compose configuration
+- Images used by existing containers
+- Matching image IDs, even when tags differ
 
-* Remove outdated Pangolin-related images
-* Remove dangling images
-* Display Docker disk usage
+Destructive actions require confirmation.
 
-Every destructive action requires confirmation.
+## Configuration
 
----
+On first start, the script automatically creates:
+
+```text
+maintenance.conf
+```
+
+On later starts it:
+
+- Preserves user-defined values
+- Adds new configuration options automatically
+- Refreshes comments and descriptions
+- Creates `maintenance.conf.bak` before replacing the generated configuration
+
+Important networking options introduced for version 2.4:
+
+```bash
+ENABLE_EXTERNAL_TCP_TEST=true
+TCP_TEST_TIMEOUT=5
+```
+
+Disable the TCP check with:
+
+```bash
+ENABLE_EXTERNAL_TCP_TEST=false
+```
+
+The script self-update settings are:
+
+```bash
+SCRIPT_UPDATE_MODE=ask
+SCRIPT_UPDATE_URL=https://raw.githubusercontent.com/sandmaennchen5/scripts/refs/heads/main/pangolin/maintenance.sh
+SCRIPT_UPDATE_TIMEOUT=8
+```
+
+Allowed update modes:
+
+- `ask`
+- `auto`
+- `off`
 
 ## Requirements
 
-The following software is required:
+- Linux
+- Bash
+- Docker Engine
+- Docker Compose plugin
+- `curl`
+- `jq`
+- `yq`
+- `tar`
 
-* Linux
-* Bash
-* Docker Engine
-* Docker Compose plugin
-* `jq`
-* `tar`
-* `curl`
+Optional firewall commands are used when installed:
 
-Example installation on Debian or Ubuntu:
+- `ufw`
+- `firewall-cmd`
+- `nft`
+- `iptables`
+
+Example for Debian or Ubuntu:
 
 ```bash
 sudo apt update
-sudo apt install -y jq tar curl
+sudo apt install -y curl jq yq tar
 ```
 
 Docker must already be installed and running.
 
-Verify Docker:
-
-```bash
-docker --version
-docker compose version
-```
-
----
-
 ## Download
 
-The script is available from:
-
-```text
-https://github.com/sandmaennchen5/scripts/blob/main/pangolin/maintenance.sh
-```
-
-### Download with curl
-
-Open a terminal and change to your Pangolin installation directory:
+Change to the Pangolin installation directory:
 
 ```bash
 cd /opt/pangolin
 ```
 
-Download the script from the raw GitHub URL:
+Download the current script:
 
 ```bash
 curl -fsSL \
@@ -224,195 +321,13 @@ curl -fsSL \
   -o maintenance.sh
 ```
 
-### Download with wget
-
-Alternatively:
-
-```bash
-wget \
-  https://raw.githubusercontent.com/sandmaennchen5/scripts/refs/heads/main/pangolin/maintenance.sh \
-  -O maintenance.sh
-```
-
-### Make the script executable
+Make it executable:
 
 ```bash
 chmod +x maintenance.sh
 ```
 
----
-
-## Installation Directory
-
-The script should normally be stored and executed inside the Pangolin installation directory.
-
-Example:
-
-```text
-/opt/pangolin/
-├── maintenance.sh
-├── docker-compose.yml
-├── .env
-├── config/
-├── branding/
-└── traefik_config.yml
-```
-
-Change to this directory before running the tool:
-
-```bash
-cd /opt/pangolin
-```
-
----
-
-## Usage
-
-Start the interactive maintenance tool:
-
-```bash
-sudo ./maintenance.sh
-```
-
-The main menu provides access to:
-
-```text
-[1] Update
-[2] Create backup
-[3] Restore backup
-[4] Refresh versions
-[5] Container management
-[6] System diagnostics
-[7] System cleanup
-[8] Check for maintenance script update
-[0] Exit
-```
-
-Root privileges may be required depending on the Docker installation and permissions.
-
-When the current user has access to Docker without `sudo`, the tool can also be started with:
-
-```bash
-./maintenance.sh
-```
-
----
-
-## Container Management
-
-Open the interactive tool:
-
-```bash
-sudo ./maintenance.sh
-```
-
-Select:
-
-```text
-[5] Container management
-```
-
-Available actions include:
-
-```text
-[1] Start containers
-[2] Stop containers
-[3] Restart containers
-[4] Show status
-[5] Show logs
-[0] Back
-```
-
-### Start from the command line
-
-```bash
-sudo ./maintenance.sh --start
-```
-
-### Stop from the command line
-
-```bash
-sudo ./maintenance.sh --stop
-```
-
-### Restart from the command line
-
-```bash
-sudo ./maintenance.sh --restart
---self-update
-```
-
----
-
-## System Diagnostics
-
-Run the diagnostics from the interactive menu:
-
-```text
-[6] System diagnostics
-```
-
-Or run diagnostics directly:
-
-```bash
-sudo ./maintenance.sh --diagnose
-```
-
-The diagnostic report checks Docker, Compose, containers, health status, images and configuration files.
-
----
-
-## Pangolin Availability Test
-
-The Pangolin URL can be supplied through the `PANGOLIN_HEALTH_URL` environment variable.
-
-Example:
-
-```bash
-sudo PANGOLIN_HEALTH_URL="https://pangolin.example.com" \
-  ./maintenance.sh
-```
-
-The URL is then used during system diagnostics.
-
-For a direct diagnostic run:
-
-```bash
-sudo PANGOLIN_HEALTH_URL="https://pangolin.example.com" \
-  ./maintenance.sh --diagnose
-```
-
----
-
-## Updating the Maintenance Script
-
-To replace the local copy with the latest version from GitHub:
-
-```bash
-cd /opt/pangolin
-```
-
-Create a backup of the current script:
-
-```bash
-cp maintenance.sh maintenance.sh.bak
-```
-
-Download the current version:
-
-```bash
-curl -fsSL \
-  https://raw.githubusercontent.com/sandmaennchen5/scripts/refs/heads/main/pangolin/maintenance.sh \
-  -o maintenance.sh
-```
-
-Restore executable permissions:
-
-```bash
-chmod +x maintenance.sh
-```
-
-Check the Bash syntax:
+Validate the Bash syntax before running it:
 
 ```bash
 bash -n maintenance.sh
@@ -424,193 +339,143 @@ Start the tool:
 sudo ./maintenance.sh
 ```
 
----
+## Interactive Menu
 
-## One-Line Installation
+```text
+[1] Update
+[2] Create backup
+[3] Restore backup
+[4] Check versions again
+[5] Container management
+[6] System diagnostics
+[7] System cleanup
+[8] Check for script update
+[0] Exit
+```
 
-The script can be downloaded and made executable with:
+## Command-Line Usage
+
+```text
+--backup
+--restore [backup]
+--check
+--diagnose
+--start
+--stop
+--restart
+--self-update
+--version
+-V
+```
+
+Examples:
 
 ```bash
-cd /opt/pangolin && \
-curl -fsSL \
-  https://raw.githubusercontent.com/sandmaennchen5/scripts/refs/heads/main/pangolin/maintenance.sh \
-  -o maintenance.sh && \
-chmod +x maintenance.sh
+sudo ./maintenance.sh --diagnose
+sudo ./maintenance.sh --backup
+sudo ./maintenance.sh --start
+sudo ./maintenance.sh --stop
+sudo ./maintenance.sh --restart
+sudo ./maintenance.sh --self-update
+./maintenance.sh --version
 ```
 
-Then run:
+## Updating the Maintenance Script
+
+Use the menu entry:
+
+```text
+[8] Check for script update
+```
+
+or run:
 
 ```bash
-sudo ./maintenance.sh
+sudo ./maintenance.sh --self-update
 ```
 
----
+The update process:
 
-## Security Recommendation
+1. Downloads the remote script
+2. Reads and compares `SCRIPT_VERSION`
+3. Validates it with `bash -n`
+4. Creates a backup of the current script
+5. Replaces the script atomically
+6. Restarts the updated script when appropriate
 
-Review scripts downloaded from the internet before running them with root privileges.
+The persistent `maintenance.conf` is not replaced by a script update.
 
-Display the downloaded script:
+## Installation Directory
 
-```bash
-less maintenance.sh
+A typical installation looks like:
+
+```text
+/opt/pangolin/
+├── maintenance.sh
+├── maintenance.conf
+├── docker-compose.yml
+├── config/
+├── branding/
+└── backups/
 ```
 
-Validate its Bash syntax:
-
-```bash
-bash -n maintenance.sh
-```
-
-Only run the script after verifying that the source and contents are trusted.
-
-Avoid executing remote scripts directly through commands such as:
-
-```bash
-curl URL | sudo bash
-```
-
-Downloading the file first makes it possible to inspect the script before execution.
-
----
-
-## Backup Metadata Example
-
-```json
-{
-  "created": "2026-07-27T20:15:00+02:00",
-  "script_version": "2.0",
-  "hostname": "pangolin-host",
-  "docker_version": "28.3.3",
-  "compose_version": "2.39.1",
-  "containers": {
-    "pangolin": "ee-1.21.0",
-    "gerbil": "1.0.0",
-    "traefik": "v3.5.1"
-  },
-  "plugins": {
-    "geoblock": "v0.3.6"
-  }
-}
-```
-
----
+The optional `.env` file may also be present.
 
 ## Safety
 
-The tool is designed to operate safely by default.
-
 Safety features include:
 
-* Backup before updates
-* Restore safety backup
-* Rollback after failed operations
-* Confirmation before destructive actions
-* Configuration validation
-* Compatibility with older backups
-* Protection of active Docker images
-* Protection of images referenced by Docker Compose
+- Automatic backup before updates
+- Pre-restore safety backup
+- Rollback after failed operations
+- Confirmation before destructive actions
+- Compose and Bash validation
+- Backward-compatible restore handling
+- Protection of active Docker images
+- Persistent configuration separated from the script
 
----
+Review scripts downloaded from the internet before running them with root privileges. Download the file first instead of piping a remote URL directly into `sudo bash`.
 
 ## Troubleshooting
 
 ### Permission denied
 
-Make sure the script is executable:
-
 ```bash
 chmod +x maintenance.sh
-```
-
-Then run it again:
-
-```bash
 sudo ./maintenance.sh
 ```
 
 ### Docker permission denied
 
-Run the tool with `sudo`:
-
-```bash
-sudo ./maintenance.sh
-```
-
-Alternatively, configure the current user for Docker access according to the Docker documentation.
+Run the tool with `sudo`, or configure the current user for Docker access.
 
 ### Docker daemon unavailable
 
-Check Docker:
-
 ```bash
 sudo systemctl status docker
-```
-
-Start Docker if necessary:
-
-```bash
 sudo systemctl start docker
 ```
 
-### Docker Compose unavailable
-
-Verify the Compose plugin:
-
-```bash
-docker compose version
-```
-
-### Compose file not found
-
-Make sure the tool is executed from the Pangolin installation directory containing:
-
-```text
-docker-compose.yml
-```
-
-Example:
-
-```bash
-cd /opt/pangolin
-sudo ./maintenance.sh
-```
-
 ### Invalid Compose configuration
-
-Validate the file manually:
 
 ```bash
 docker compose config -q
 ```
 
-### Pangolin availability test fails
+### Firewall result is unknown
 
-Verify the configured URL:
+The tool intentionally reports an informational result when a firewall rule cannot be interpreted reliably. Complex nftables sets, custom chains, interfaces, source filters, Docker-managed rules, or provider firewalls may require manual inspection.
 
-```bash
-curl -I https://pangolin.example.com
-```
+### UDP appears locally open but clients cannot connect
 
-Also check DNS, firewall rules, certificates and the Traefik container logs.
+Check:
 
----
-
-## Project Goal
-
-The Pangolin Maintenance Tool provides one central interface for:
-
-* Updating Pangolin
-* Creating backups
-* Restoring installations
-* Inspecting component versions
-* Managing containers
-* Diagnosing problems
-* Cleaning obsolete Docker images
-
-This reduces the need for manual Docker and file-management commands.
-
----
+- Docker publishes the correct UDP port
+- A local listener exists
+- The host firewall permits the port
+- The cloud/provider firewall permits the port
+- DNS points to the correct public address
+- A real remote Pangolin client or peer can reach the server
 
 ## License
 
