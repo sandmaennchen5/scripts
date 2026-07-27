@@ -1,410 +1,595 @@
-# Pangolin Update Script
+# Pangolin Maintenance Tool
 
-A configurable update utility for **Pangolin**, **Traefik plugins**, and **Docker images** with automatic version detection, backups, multilingual support, and unattended execution.
+A comprehensive maintenance utility for **Pangolin** installations.
+
+The tool provides an interactive menu for managing:
+
+* Updates
+* Backups
+* Restores
+* Container operations
+* System diagnostics
+* Docker image cleanup
+
+---
 
 ## Features
 
-* Automatically detects available updates for:
+### Update
 
-  * Docker images
-  * Traefik plugins
-* Supports **automatic** and **manual** update modes
-* Supports update scopes:
+* Checks Pangolin and Gerbil versions
+* Updates Docker image references
+* Creates an automatic backup before updating
+* Pulls new images
+* Restarts the Pangolin stack
+* Rolls back when an update fails
 
-  * Patch
-  * Minor
-  * Major
-* Automatically preserves tag variants such as:
+### Backup
 
-  * `ee-*`
-  * `postgresql-*`
-  * `ee-postgresql-*`
-  * `v*`
-  * and other custom prefixes
-* Optional backup of the `./config` directory before container updates
-* Automatic YAML backup before modifications
-* Backup retention policy
-* Interactive or fully unattended execution
-* English and German user interface
-* Configurable through environment variables
-* Optional Docker Compose update (`pull` + `up -d`)
-* Bash syntax checked
+Creates backups of the Pangolin installation, including:
+
+* `config/`
+* `docker-compose.yml`
+* `.env`
+* `traefik_config.yml`
+* `branding/`
+
+Each backup includes a `metadata.json` file containing:
+
+* Creation date
+* Script version
+* Hostname
+* User
+* Working directory
+* Operating system
+* Kernel
+* Architecture
+* Docker version
+* Docker Compose version
+* Container versions
+* Traefik plugin versions
+* Included files
+* Checksums
+* Backup size
+* Backup type
+
+### Restore
+
+The interactive restore menu lists available backups with:
+
+* Backup date
+* Pangolin version
+* Gerbil version
+* Backup size
+* Backup type
+
+After selecting a backup, the tool displays detailed information before restoring:
+
+* Host information
+* All container versions
+* All Traefik plugin versions
+* Docker and Docker Compose versions
+* Operating system
+* Kernel
+* Architecture
+* Included files
+* Backup size
+
+Older backups using the previous metadata format remain supported.
+
+### Container Management
+
+The complete Pangolin Docker Compose stack can be managed directly from the menu.
+
+Available actions:
+
+* Start all containers
+* Stop all containers
+* Restart all containers
+* Display container status
+* Display logs for a selected container
+
+### System Diagnostics
+
+The diagnostic function checks:
+
+#### Docker
+
+* Docker daemon availability
+* Docker Compose availability
+* Docker socket access
+
+#### Containers
+
+* Running containers
+* Restarting containers
+* Exited containers
+* Dead containers
+* Missing containers
+* Docker health-check status
+
+#### Images
+
+* Missing local images
+* Missing image tags
+* Compose image availability
+
+#### Configuration
+
+* `docker-compose.yml`
+* `traefik_config.yml`
+* `.env`
+* `config/`
+
+The Compose configuration is validated using:
+
+```bash
+docker compose config -q
+```
+
+#### Pangolin availability
+
+An optional HTTP or HTTPS test can verify whether Pangolin is reachable.
+
+### System Cleanup
+
+The cleanup function safely detects outdated Docker images related to the current Pangolin installation.
+
+The following images are protected automatically:
+
+* Images currently referenced by `docker-compose.yml`
+* Images currently used by existing containers
+
+Additional cleanup functions include:
+
+* Remove outdated Pangolin-related images
+* Remove dangling images
+* Display Docker disk usage
+
+Every destructive action requires confirmation.
 
 ---
 
-# Requirements
+## Requirements
 
+The following software is required:
+
+* Linux
 * Bash
-* Docker
-* Docker Compose
-* Internet connection
+* Docker Engine
+* Docker Compose plugin
+* `jq`
+* `tar`
+* `curl`
 
----
-
-# Usage
-
-Interactive:
+Example installation on Debian or Ubuntu:
 
 ```bash
-sudo ./update.sh
+sudo apt update
+sudo apt install -y jq tar curl
 ```
 
-Show version:
+Docker must already be installed and running.
+
+Verify Docker:
 
 ```bash
-./update.sh --version
-```
-
----
-
-# Configuration
-
-The script can be configured either by editing the variables at the top of the script or by using environment variables.
-
-## Script Information
-
-```bash
-SCRIPT_NAME="Pangolin Update Script"
-SCRIPT_VERSION="1.1"
+docker --version
+docker compose version
 ```
 
 ---
 
-## Language
+## Download
 
-```bash
-LANGUAGE=de
+The script is available from:
+
+```text
+https://github.com/sandmaennchen5/scripts/blob/main/pangolin/maintenance.sh
 ```
 
-Available values:
+### Download with curl
 
-* `de`
-* `en`
+Open a terminal and change to your Pangolin installation directory:
+
+```bash
+cd /opt/pangolin
+```
+
+Download the script from the raw GitHub URL:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/sandmaennchen5/scripts/main/pangolin/maintenance.sh \
+  -o maintenance.sh
+```
+
+### Download with wget
+
+Alternatively:
+
+```bash
+wget \
+  https://raw.githubusercontent.com/sandmaennchen5/scripts/main/pangolin/maintenance.sh \
+  -O maintenance.sh
+```
+
+### Make the script executable
+
+```bash
+chmod +x maintenance.sh
+```
+
+---
+
+## Installation Directory
+
+The script should normally be stored and executed inside the Pangolin installation directory.
 
 Example:
 
-```bash
-LANGUAGE=en ./update.sh
-```
-
----
-
-## Execution
-
-```bash
-UNATTENDED=false
-```
-
-Values:
-
-* `true`
-* `false`
-
----
-
-## Update Mode
-
-```bash
-UPDATE_MODE=ask
-```
-
-Values:
-
-* `ask`
-* `auto`
-* `manual`
-* `none`
-
----
-
-## Update Level
-
-```bash
-UPDATE_LEVEL=ask
-```
-
-Values:
-
-* `ask`
-* `patch`
-* `minor`
-* `major`
-
-### Patch
-
-Updates only within the same minor version.
-
-Example:
-
-```
-1.20.0 → 1.20.5
-```
-
-### Minor
-
-Updates only within the same major version.
-
-Example:
-
-```
-1.20.0 → 1.24.3
-```
-
-### Major
-
-Updates to the newest available version while keeping the tag variant.
-
-Example:
-
-```
-1.20.0 → 2.0.1
-```
-
----
-
-# Default Answers
-
-Every interactive question supports a configurable default value.
-
-## Update Mode
-
-```bash
-DEFAULT_UPDATE_MODE=none
-```
-
-Values:
-
-* `auto`
-* `manual`
-* `none`
-
----
-
-## Update Level
-
-```bash
-DEFAULT_UPDATE_LEVEL=patch
-```
-
-Values:
-
-* `patch`
-* `minor`
-* `major`
-
----
-
-## Docker Compose
-
-```bash
-DEFAULT_RUN_COMPOSE=yes
-```
-
-Values:
-
-* `yes`
-* `no`
-
----
-
-## Config Backup
-
-```bash
-DEFAULT_CONFIG_BACKUP=yes
-```
-
-Values:
-
-* `yes`
-* `no`
-
----
-
-## Manual Selection
-
-```bash
-DEFAULT_MANUAL_SELECTION=0
-```
-
-Values:
-
-* `0` = Skip update
-* `1` = Select first available version
-* `2` = Select second available version
-* ...
-
-Pressing **Enter** automatically selects the configured default.
-
----
-
-# Docker Compose
-
-```bash
-RUN_COMPOSE=ask
-```
-
-Values:
-
-* `ask`
-* `yes`
-* `no`
-
----
-
-# Config Backup
-
-```bash
-CONFIG_BACKUP=ask
-```
-
-Values:
-
-* `ask`
-* `yes`
-* `no`
-
----
-
-# Backup Retention
-
-```bash
-BACKUP_RETENTION_DAYS=30
-BACKUP_MIN_KEEP=3
-```
-
-The script automatically removes old backups while always keeping the newest backups.
-
----
-
-# Output Modes
-
-## Debug
-
-```bash
-DEBUG=true
-```
-
-Displays additional information such as:
-
-* detected tags
-* selected versions
-* configuration
-* filtering decisions
-
----
-
-## Quiet
-
-```bash
-QUIET=true
-```
-
-Suppresses normal informational output while still displaying warnings and errors.
-
----
-
-# Backup Structure
-
-```
-backups/
+```text
+/opt/pangolin/
+├── maintenance.sh
+├── docker-compose.yml
+├── .env
 ├── config/
-│   ├── config-2026-07-27_120000.tar.gz
-│   └── ...
-└── yaml/
-    ├── docker-compose-2026-07-27_120000.yml
-    └── ...
+├── branding/
+└── traefik_config.yml
 ```
 
----
-
-# Automatic Examples
-
-## Fully automatic patch update
+Change to this directory before running the tool:
 
 ```bash
-sudo env \
-LANGUAGE=en \
-UNATTENDED=true \
-UPDATE_MODE=auto \
-UPDATE_LEVEL=patch \
-CONFIG_BACKUP=yes \
-RUN_COMPOSE=yes \
-./update.sh
+cd /opt/pangolin
 ```
 
 ---
 
-## Automatic minor updates
+## Usage
+
+Start the interactive maintenance tool:
 
 ```bash
-sudo env \
-UNATTENDED=true \
-UPDATE_MODE=auto \
-UPDATE_LEVEL=minor \
-RUN_COMPOSE=yes \
-CONFIG_BACKUP=yes \
-./update.sh
+sudo ./maintenance.sh
 ```
 
----
+The main menu provides access to:
 
-## Automatic major updates
+```text
+[1] Update
+[2] Create backup
+[3] Restore backup
+[4] Refresh versions
+[5] Container management
+[6] System diagnostics
+[7] System cleanup
+[0] Exit
+```
+
+Root privileges may be required depending on the Docker installation and permissions.
+
+When the current user has access to Docker without `sudo`, the tool can also be started with:
 
 ```bash
-sudo env \
-UNATTENDED=true \
-UPDATE_MODE=auto \
-UPDATE_LEVEL=major \
-RUN_COMPOSE=yes \
-CONFIG_BACKUP=yes \
-./update.sh
+./maintenance.sh
 ```
 
 ---
 
-## Check for updates only
+## Container Management
+
+Open the interactive tool:
 
 ```bash
-sudo env \
-UNATTENDED=true \
-UPDATE_MODE=none \
-RUN_COMPOSE=no \
-./update.sh
+sudo ./maintenance.sh
+```
+
+Select:
+
+```text
+[5] Container management
+```
+
+Available actions include:
+
+```text
+[1] Start containers
+[2] Stop containers
+[3] Restart containers
+[4] Show status
+[5] Show logs
+[0] Back
+```
+
+### Start from the command line
+
+```bash
+sudo ./maintenance.sh --start
+```
+
+### Stop from the command line
+
+```bash
+sudo ./maintenance.sh --stop
+```
+
+### Restart from the command line
+
+```bash
+sudo ./maintenance.sh --restart
 ```
 
 ---
 
-# Version Detection
+## System Diagnostics
 
-The script automatically detects version prefixes and preserves them during updates.
+Run the diagnostics from the interactive menu:
 
-Examples:
-
-```
-1.20.0
-ee-1.20.0
-postgresql-1.20.0
-ee-postgresql-1.20.0
-v3.7.8
+```text
+[6] System diagnostics
 ```
 
-Only matching variants are considered during update selection.
+Or run diagnostics directly:
+
+```bash
+sudo ./maintenance.sh --diagnose
+```
+
+The diagnostic report checks Docker, Compose, containers, health status, images and configuration files.
 
 ---
 
-# Exit Codes
+## Pangolin Availability Test
 
-| Code | Meaning                     |
-| ---: | --------------------------- |
-|    0 | Success                     |
-|    1 | General error               |
-|    2 | Invalid configuration       |
-|    3 | Required dependency missing |
+The Pangolin URL can be supplied through the `PANGOLIN_HEALTH_URL` environment variable.
+
+Example:
+
+```bash
+sudo PANGOLIN_HEALTH_URL="https://pangolin.example.com" \
+  ./maintenance.sh
+```
+
+The URL is then used during system diagnostics.
+
+For a direct diagnostic run:
+
+```bash
+sudo PANGOLIN_HEALTH_URL="https://pangolin.example.com" \
+  ./maintenance.sh --diagnose
+```
 
 ---
 
-# License
+## Updating the Maintenance Script
 
-This project is provided as-is without warranty.
+To replace the local copy with the latest version from GitHub:
 
-Feel free to modify and distribute it according to your project's license.
+```bash
+cd /opt/pangolin
+```
+
+Create a backup of the current script:
+
+```bash
+cp maintenance.sh maintenance.sh.bak
+```
+
+Download the current version:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/sandmaennchen5/scripts/main/pangolin/maintenance.sh \
+  -o maintenance.sh
+```
+
+Restore executable permissions:
+
+```bash
+chmod +x maintenance.sh
+```
+
+Check the Bash syntax:
+
+```bash
+bash -n maintenance.sh
+```
+
+Start the tool:
+
+```bash
+sudo ./maintenance.sh
+```
+
+---
+
+## One-Line Installation
+
+The script can be downloaded and made executable with:
+
+```bash
+cd /opt/pangolin && \
+curl -fsSL \
+  https://raw.githubusercontent.com/sandmaennchen5/scripts/main/pangolin/maintenance.sh \
+  -o maintenance.sh && \
+chmod +x maintenance.sh
+```
+
+Then run:
+
+```bash
+sudo ./maintenance.sh
+```
+
+---
+
+## Security Recommendation
+
+Review scripts downloaded from the internet before running them with root privileges.
+
+Display the downloaded script:
+
+```bash
+less maintenance.sh
+```
+
+Validate its Bash syntax:
+
+```bash
+bash -n maintenance.sh
+```
+
+Only run the script after verifying that the source and contents are trusted.
+
+Avoid executing remote scripts directly through commands such as:
+
+```bash
+curl URL | sudo bash
+```
+
+Downloading the file first makes it possible to inspect the script before execution.
+
+---
+
+## Backup Metadata Example
+
+```json
+{
+  "created": "2026-07-27T20:15:00+02:00",
+  "script_version": "2.0",
+  "hostname": "pangolin-host",
+  "docker_version": "28.3.3",
+  "compose_version": "2.39.1",
+  "containers": {
+    "pangolin": "ee-1.21.0",
+    "gerbil": "1.0.0",
+    "traefik": "v3.5.1"
+  },
+  "plugins": {
+    "geoblock": "v0.3.6"
+  }
+}
+```
+
+---
+
+## Safety
+
+The tool is designed to operate safely by default.
+
+Safety features include:
+
+* Backup before updates
+* Restore safety backup
+* Rollback after failed operations
+* Confirmation before destructive actions
+* Configuration validation
+* Compatibility with older backups
+* Protection of active Docker images
+* Protection of images referenced by Docker Compose
+
+---
+
+## Troubleshooting
+
+### Permission denied
+
+Make sure the script is executable:
+
+```bash
+chmod +x maintenance.sh
+```
+
+Then run it again:
+
+```bash
+sudo ./maintenance.sh
+```
+
+### Docker permission denied
+
+Run the tool with `sudo`:
+
+```bash
+sudo ./maintenance.sh
+```
+
+Alternatively, configure the current user for Docker access according to the Docker documentation.
+
+### Docker daemon unavailable
+
+Check Docker:
+
+```bash
+sudo systemctl status docker
+```
+
+Start Docker if necessary:
+
+```bash
+sudo systemctl start docker
+```
+
+### Docker Compose unavailable
+
+Verify the Compose plugin:
+
+```bash
+docker compose version
+```
+
+### Compose file not found
+
+Make sure the tool is executed from the Pangolin installation directory containing:
+
+```text
+docker-compose.yml
+```
+
+Example:
+
+```bash
+cd /opt/pangolin
+sudo ./maintenance.sh
+```
+
+### Invalid Compose configuration
+
+Validate the file manually:
+
+```bash
+docker compose config -q
+```
+
+### Pangolin availability test fails
+
+Verify the configured URL:
+
+```bash
+curl -I https://pangolin.example.com
+```
+
+Also check DNS, firewall rules, certificates and the Traefik container logs.
+
+---
+
+## Project Goal
+
+The Pangolin Maintenance Tool provides one central interface for:
+
+* Updating Pangolin
+* Creating backups
+* Restoring installations
+* Inspecting component versions
+* Managing containers
+* Diagnosing problems
+* Cleaning obsolete Docker images
+
+This reduces the need for manual Docker and file-management commands.
+
+---
+
+## License
+
+MIT License
