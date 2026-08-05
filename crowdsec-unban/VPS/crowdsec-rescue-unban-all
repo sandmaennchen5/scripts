@@ -1,0 +1,4 @@
+#!/bin/bash
+set -eu
+
+exec docker exec crowdsec cscli decisions delete --all

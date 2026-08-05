@@ -1,0 +1,160 @@
+CrowdSec Unban – vollständige Installation
+===========================================
+
+Voraussetzungen
+---------------
+
+- Linux-VPS mit Docker und laufendem Container namens "crowdsec"
+- OpenSSH-Server auf dem VPS
+- Webspace mit PHP >= 7.4, exec() und /usr/bin/ssh
+- HTTPS-Domain, deren DocumentRoot auf WEBSPACE/public zeigt
+- Root- oder sudo-Zugang zum VPS
+
+1. SSH-Schlüssel erzeugen
+-------------------------
+
+Auf einem vertrauenswürdigen Rechner ausführen:
+
+  ssh-keygen -t ed25519 -f crowdsec_rescue -C crowdsec-rescue
+
+Es entstehen:
+
+- crowdsec_rescue: privater Schlüssel für den Webspace
+- crowdsec_rescue.pub: öffentlicher Schlüssel für den VPS
+
+Der private Schlüssel darf niemals in GitHub, E-Mails oder öffentliche Verzeichnisse gelangen.
+Für den automatischen PHP-Aufruf darf er keine interaktiv abzufragende Passphrase benötigen.
+
+2. Eingeschränkten VPS-Benutzer anlegen
+---------------------------------------
+
+  sudo useradd --create-home --shell /bin/bash rescue
+  sudo passwd --lock rescue
+  sudo install -d -o rescue -g rescue -m 0700 /home/rescue/.ssh
+
+Die Datei /home/rescue/.ssh/authorized_keys erstellen. Vor den Inhalt von
+crowdsec_rescue.pub exakt diese Einschränkungen setzen:
+
+  command="/usr/local/bin/crowdsec-rescue-wrapper",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA... crowdsec-rescue
+
+Dann:
+
+  sudo chown rescue:rescue /home/rescue/.ssh/authorized_keys
+  sudo chmod 0600 /home/rescue/.ssh/authorized_keys
+
+Das Benutzerkonto hat ein gesperrtes Passwort. Der Schlüssel erzwingt den Wrapper und erlaubt
+keine freie Shell, kein Terminal und keine Weiterleitungen.
+
+3. VPS-Skripte automatisch installieren
+----------------------------------------
+
+Den vollständigen Ordner VPS auf den Server kopieren und darin ausführen:
+
+  sudo bash install-vps.sh
+
+Der Installer prüft rescue, Docker, CrowdSec, Python, sudo und visudo. Vorhandene Dateien werden
+unter /var/backups/crowdsec-rescue/ gesichert. Installiert werden:
+
+  /usr/local/bin/crowdsec-rescue-wrapper
+  /usr/local/sbin/crowdsec-rescue-status
+  /usr/local/sbin/crowdsec-rescue-alerts
+  /usr/local/sbin/crowdsec-rescue-unban
+  /usr/local/sbin/crowdsec-rescue-unban-all
+  /etc/sudoers.d/crowdsec-rescue
+
+Der Wrapper akzeptiert ausschließlich:
+
+  STATUS <gültige IPv4/IPv6>
+  ALERTS <gültige IPv4/IPv6>
+  UNBAN <gültige IPv4/IPv6>
+  UNBAN_ALL
+
+Die IP wird erneut im privilegierten Skript validiert. sudo erlaubt nur die vier fest definierten
+Skripte. Der Installationstest verwendet STATUS 192.0.2.1 und löscht keine Entscheidung.
+
+4. Webspace-Dateien installieren
+--------------------------------
+
+Gewünschte Struktur:
+
+  WEBSPACE/
+  |-- config.php
+  |-- crowdsec_rescue
+  |-- .htpasswd
+  `-- public/
+      |-- .htaccess
+      |-- index.php
+      |-- admin.php
+      `-- check.php
+
+Nur public/ darf über die Domain erreichbar sein.
+
+- crowdsec_rescue.example nach crowdsec_rescue kopieren und den echten privaten Schlüssel einsetzen.
+- In config.php host, port, server_name und server_description anpassen.
+- admin_users enthält standardmäßig "admin".
+- In public/.htaccess /ABSOLUTER/PFAD/ZUM/WEBSPACE durch den echten Pfad ersetzen.
+- Empfohlene Rechte:
+
+    chmod 0600 crowdsec_rescue .htpasswd config.php
+    chmod 0644 public/.htaccess public/*.php
+    chmod 0755 public
+
+Das Verzeichnis oberhalb von public/ muss für den PHP-Benutzer beschreibbar sein, damit Audit,
+Rate-Limit, Passwort- und Schlüsselsicherungen angelegt werden können.
+
+5. VPS-Hostschlüssel hinterlegen
+--------------------------------
+
+Den Fingerprint des VPS zuerst über einen unabhängigen, vertrauenswürdigen Kanal prüfen. Danach
+den Schlüssel in known_hosts des PHP-/Hosting-Benutzers aufnehmen, beispielsweise:
+
+  mkdir -p ~/.ssh
+  chmod 0700 ~/.ssh
+  ssh-keyscan -p SSH_PORT VPS_IP >> ~/.ssh/known_hosts
+  chmod 0600 ~/.ssh/known_hosts
+
+ssh-keyscan allein bestätigt nicht die Identität; der angezeigte Fingerprint muss mit dem VPS
+verglichen werden. Die Anwendung nutzt StrictHostKeyChecking=yes.
+
+6. Erstanmeldung und Benutzer
+-----------------------------
+
+Veröffentlichte Standarddaten:
+
+  Benutzer: admin
+  Passwort: admin
+
+Diese Daten sind absichtlich nur ein Bootstrap und öffentlich bekannt. Sofort nach dem ersten
+Login https://DEINE-DOMAIN/admin.php öffnen und für admin ein langes, einzigartiges Passwort
+setzen. admin.php verlangt mindestens 12 Zeichen und speichert danach bcrypt.
+
+Weitere Benutzer werden in admin.php angelegt. Sie dürfen Status prüfen und ihre erkannte IP
+entsperren. Administratoren werden nicht über eine Checkbox vergeben, sondern nur in config.php:
+
+  'admin_users' => ['admin', 'weiterer-admin'],
+
+Nur Administratoren sehen "Alle Sperren löschen". Auch direkt manipulierte Anfragen werden
+serverseitig abgewiesen und protokolliert.
+
+7. Prüfung
+----------
+
+  https://DEINE-DOMAIN/check.php
+
+Danach in admin.php "SSH und CrowdSec prüfen" ausführen. Dieser Test sendet ausschließlich
+STATUS <Besucher-IP>. Er entsperrt und löscht nichts.
+
+Lokale VPS-Prüfungen:
+
+  sudo visudo -cf /etc/sudoers.d/crowdsec-rescue
+  sudo -u rescue env SSH_ORIGINAL_COMMAND="STATUS 192.0.2.1" /usr/local/bin/crowdsec-rescue-wrapper
+  sudo -u rescue env SSH_ORIGINAL_COMMAND="ALERTS 192.0.2.1" /usr/local/bin/crowdsec-rescue-wrapper
+
+8. Betrieb
+----------
+
+- Standardpasswort niemals beibehalten.
+- Audit-Log regelmäßig rotieren und gemäß Datenschutzvorgaben löschen.
+- SSH-Schlüssel regelmäßig ersetzen.
+- Nach CrowdSec-Updates Containername und cscli-Ausgabe prüfen.
+- UNBAN_ALL nur im Notfall verwenden; es löscht sämtliche aktiven Entscheidungen.

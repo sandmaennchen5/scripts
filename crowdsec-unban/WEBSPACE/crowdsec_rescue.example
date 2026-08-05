@@ -1,0 +1,4 @@
+Diese Datei ist nur ein Platzhalter.
+
+Vor der Installation nach "crowdsec_rescue" kopieren und den gesamten Inhalt durch den echten,
+mit ssh-keygen erzeugten privaten OpenSSH-Schlüssel ersetzen.

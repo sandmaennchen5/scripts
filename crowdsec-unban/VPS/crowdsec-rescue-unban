@@ -1,0 +1,10 @@
+#!/bin/bash
+set -eu
+
+IP="${1:-}"
+python3 -c 'import ipaddress,sys; ipaddress.ip_address(sys.argv[1])' "$IP" 2>/dev/null || {
+    echo "Ungueltige IP-Adresse" >&2
+    exit 65
+}
+
+exec docker exec crowdsec cscli decisions delete --ip "$IP"

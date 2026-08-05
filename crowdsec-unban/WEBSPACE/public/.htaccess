@@ -1,0 +1,10 @@
+AuthType Basic
+AuthName "CrowdSec Notfallzugang"
+AuthUserFile /ABSOLUTER/PFAD/ZUM/WEBSPACE/.htpasswd
+Require valid-user
+
+Options -Indexes
+
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>

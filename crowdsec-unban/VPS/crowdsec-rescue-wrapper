@@ -1,0 +1,23 @@
+#!/bin/bash
+set -eu
+
+COMMAND="${SSH_ORIGINAL_COMMAND:-}"
+
+if [[ "$COMMAND" == "UNBAN_ALL" ]]; then
+    exec sudo /usr/local/sbin/crowdsec-rescue-unban-all
+fi
+
+if [[ "$COMMAND" =~ ^(STATUS|ALERTS|UNBAN)[[:space:]]+([^[:space:]]+)$ ]]; then
+    ACTION="${BASH_REMATCH[1]}"
+    IP="${BASH_REMATCH[2]}"
+else
+    echo "Ungueltiger Befehl" >&2
+    exit 64
+fi
+
+# IPv4/IPv6 wird im privilegierten Skript nochmals mit Python validiert.
+case "$ACTION" in
+    STATUS) exec sudo /usr/local/sbin/crowdsec-rescue-status "$IP" ;;
+    ALERTS) exec sudo /usr/local/sbin/crowdsec-rescue-alerts "$IP" ;;
+    UNBAN)  exec sudo /usr/local/sbin/crowdsec-rescue-unban "$IP" ;;
+esac

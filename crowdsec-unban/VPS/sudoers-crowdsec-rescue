@@ -1,0 +1,1 @@
+rescue ALL=(root) NOPASSWD: /usr/local/sbin/crowdsec-rescue-status *, /usr/local/sbin/crowdsec-rescue-alerts *, /usr/local/sbin/crowdsec-rescue-unban *, /usr/local/sbin/crowdsec-rescue-unban-all

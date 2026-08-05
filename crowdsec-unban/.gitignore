@@ -1,0 +1,7 @@
+WEBSPACE/crowdsec_rescue
+WEBSPACE/crowdsec_rescue.backup
+WEBSPACE/.htpasswd.backup
+WEBSPACE/.htpasswd.lock
+WEBSPACE/crowdsec_rescue_audit.log
+WEBSPACE/crowdsec_rescue_rate_limits.json
+*.log
