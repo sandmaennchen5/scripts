@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="Pangolin Maintenance Tool"
-SCRIPT_VERSION="2.5"
+SCRIPT_VERSION="2.6"
 
 # Persistent user configuration. The self-update process replaces only this
 # script; maintenance.conf remains untouched. On every start the documented
