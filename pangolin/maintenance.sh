@@ -566,7 +566,7 @@ resolve_update_level() {
 #   v3.7.8                -> Präfix "v"
 semver_filter() {
     local prefix="$1"
-    local tags="$2"
+    local tags="${2:-}"
     local escaped_prefix
 
     escaped_prefix=$(printf '%s' "$prefix" | sed -E 's/[][(){}.^$*+?|\]/\\&/g')
@@ -615,7 +615,7 @@ version_is_newer() {
 
 filter_tags_by_major() {
     local current="$1"
-    local "$2"
+    local tags="${2:-}"
     local selected_major="$3"
     local prefix tag version major minor patch
 
@@ -630,7 +630,7 @@ filter_tags_by_major() {
 
 filter_tags_by_series() {
     local current="$1"
-    local "$2"
+    local tags="${2:-}"
     local selected_major="$3"
     local selected_minor="$4"
     local prefix tag version major minor patch
@@ -667,7 +667,7 @@ MANUAL_SELECTED_TAG=""
 
 manual_select_tag() {
     local current="$1"
-    local "$2"
+    local tags="${2:-}"
     local filter_choice default_filter_choice choice direct_input prefix candidate
     local selected_major selected_minor filtered_tags version rest i
     local -a majors=() minors=() tag_list=()
@@ -789,7 +789,7 @@ manual_select_tag() {
 
 select_latest_for_level() {
     local current="$1"
-    local "$2"
+    local tags="${2:-}"
     local level="$3"
     local prefix current_version current_major current_minor current_patch
     local next_minor next_major tag version major minor patch
