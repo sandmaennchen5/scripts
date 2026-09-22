@@ -324,7 +324,7 @@ versions_loaded=false
 BACKUP_CONTAINERS_STOPPED=false
 LAST_BACKUP_DIR=""
 
-declare -A ITEMS_ALT=() ITEMS_NEW=() ITEMS_OLD=() ITEMS_TYPE=() ITEMS_PATH=() ITEMS_REPO=()
+declare -A ITEMS_ALT=() ITEMS_NEW=() ITEMS_TYPE=() ITEMS_PATH=() ITEMS_REPO=()
 
 normalize_bool() {
     case "${1,,}" in
