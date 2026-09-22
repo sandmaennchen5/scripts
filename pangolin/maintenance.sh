@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="Pangolin Maintenance Tool"
-SCRIPT_VERSION="2.6"
+SCRIPT_VERSION="2.7"
 
 # Persistent user configuration. The self-update process replaces only this
 # script; maintenance.conf remains untouched. On every start the documented
@@ -566,10 +566,9 @@ resolve_update_level() {
 #   v3.7.8                -> Präfix "v"
 semver_filter() {
     local prefix="$1"
-    local "$2"
+    local tags="$2"
     local escaped_prefix
 
-    # Präfix für die Verwendung in einem erweiterten regulären Ausdruck maskieren.
     escaped_prefix=$(printf '%s' "$prefix" | sed -E 's/[][(){}.^$*+?|\]/\\&/g')
 
     printf '%s\n' "$tags" \
