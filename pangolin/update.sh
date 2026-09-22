@@ -400,6 +400,10 @@ fetch_dockerhub_tags() {
 
     while [[ -n "$url" && "$url" != "null" ]]; do
         if ! response=$(curl -fsSL "$url"); then
+            # Large repositories such as Traefik can require many pages. If
+            # Docker Hub throttles a later request, retain the tags already
+            # received instead of discarding the service entirely.
+            [[ -n "$collected" ]] && break
             return 1
         fi
 
@@ -535,7 +539,14 @@ fi
 
 # Nur tatsächlich vorhandene Services werden eingelesen.
 # Optionale Container wie GeoIPUpdate oder CrowdSec dürfen fehlen.
-images=$(yq -r '.services // {} | .[] | .image? // empty' "$COMPOSE_FILE")
+if docker compose -f "$COMPOSE_FILE" config -q >/dev/null 2>&1; then
+    # Resolve image variables (for example ${TRAEFIK_IMAGE}) before parsing
+    # their registry, repository, and semantic-version tag.
+    images=$(docker compose -f "$COMPOSE_FILE" config 2>/dev/null |
+        yq -r '.services // {} | .[] | .image? // empty')
+else
+    images=$(yq -r '.services // {} | .[] | .image? // empty' "$COMPOSE_FILE")
+fi
 
 if [[ -z "$images" ]]; then
     info "ℹ️ $(text "Keine Images in docker-compose.yml gefunden." "No images found in docker-compose.yml.")"

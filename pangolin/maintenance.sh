@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="Pangolin Maintenance Tool"
-SCRIPT_VERSION="2.4"
+SCRIPT_VERSION="2.5"
 
 # Persistent user configuration. The self-update process replaces only this
 # script; maintenance.conf remains untouched. On every start the documented
@@ -380,21 +380,22 @@ check_script_update() {
 
     tmp_dir=$(mktemp -d)
     remote_file="$tmp_dir/maintenance.sh"
-    trap 'rm -rf -- "$tmp_dir"' RETURN
-
     if ! curl -fsSL --connect-timeout "$SCRIPT_UPDATE_TIMEOUT" --max-time "$((SCRIPT_UPDATE_TIMEOUT * 2))"         "$SCRIPT_UPDATE_URL" -o "$remote_file"; then
         [[ "$force" == true ]] && printf '❌ %s\n' "$(text "Update-Datei konnte nicht geladen werden." "Could not download the update file.")" >&2
+        rm -rf -- "$tmp_dir"
         return 0
     fi
 
     remote_version=$(sed -nE 's/^SCRIPT_VERSION="([^"]+)".*/\1/p' "$remote_file" | head -n1)
     if [[ -z "$remote_version" ]]; then
         printf '⚠️ %s\n' "$(text "Die heruntergeladene Datei enthält keine gültige SCRIPT_VERSION." "The downloaded file does not contain a valid SCRIPT_VERSION.")" >&2
+        rm -rf -- "$tmp_dir"
         return 0
     fi
 
     if ! version_is_greater "$remote_version" "$SCRIPT_VERSION"; then
         [[ "$force" == true ]] && printf '✅ %s %s\n' "$(text "Das Skript ist aktuell. Version:" "The script is up to date. Version:")" "$SCRIPT_VERSION"
+        rm -rf -- "$tmp_dir"
         return 0
     fi
 
@@ -404,10 +405,14 @@ check_script_update() {
     else
         answer=$(prompt_yes_no "$(text "Maintenance Tool jetzt aktualisieren?" "Update the Maintenance Tool now?")" ask yes)
     fi
-    [[ "$answer" == yes ]] || return 0
+    if [[ "$answer" != yes ]]; then
+        rm -rf -- "$tmp_dir"
+        return 0
+    fi
 
     if ! bash -n "$remote_file"; then
         printf '❌ %s\n' "$(text "Das heruntergeladene Skript hat Syntaxfehler. Update abgebrochen." "The downloaded script has syntax errors. Update cancelled.")" >&2
+        rm -rf -- "$tmp_dir"
         return 1
     fi
 
@@ -416,10 +421,10 @@ check_script_update() {
     chmod --reference="$script_path" "$remote_file" 2>/dev/null || chmod +x "$remote_file"
     if ! mv -f -- "$remote_file" "$script_path"; then
         printf '❌ %s\n' "$(text "Skript konnte nicht ersetzt werden. Sicherung: $backup_file" "Could not replace the script. Backup: $backup_file")" >&2
+        rm -rf -- "$tmp_dir"
         return 1
     fi
 
-    trap - RETURN
     rm -rf -- "$tmp_dir"
     printf '✅ %s %s\n' "$(text "Skript aktualisiert auf Version" "Script updated to version")" "$remote_version"
     printf 'ℹ️ %s: %s\n' "$(text "Sicherung" "Backup")" "$backup_file"
@@ -878,6 +883,10 @@ fetch_dockerhub_tags() {
 
     while [[ -n "$url" && "$url" != "null" ]]; do
         if ! response=$(curl -fsSL "$url"); then
+            # Large repositories such as Traefik can require many pages. If
+            # Docker Hub throttles a later request, retain the tags already
+            # received instead of discarding the service entirely.
+            [[ -n "$collected" ]] && break
             return 1
         fi
 
@@ -976,7 +985,7 @@ load_available_versions() {
     reset_version_cache
     info "🔎 $(text "Aktuelle Konfiguration und verfügbare Versionen werden geladen …" "Loading current configuration and available versions …")"
     local plugins plugin module current repo all_tags prefix valid latest
-    local images image repo_clean service
+    local image repo_clean service
 
     plugins=""
     if [[ "$traefik_config_exists" == true ]]; then
@@ -1000,7 +1009,6 @@ load_available_versions() {
         done <<< "$plugins"
     fi
 
-    images=$(yq -r '.services // {} | to_entries[] | select(.value.image != null) | [.key, .value.image] | @tsv' "$COMPOSE_FILE")
     while IFS=$'\t' read -r service image; do
         [[ -n "$service" && -n "$image" ]] || continue
         parse_image "$image" || continue
@@ -1020,7 +1028,7 @@ load_available_versions() {
         valid=$(semver_filter "$prefix" "$all_tags")
         latest=$(printf '%s\n' "$valid" | sort -Vr | head -n1)
         register_item "service:$service" "$current" "$latest" "$valid" image "$service" "$repo"
-    done <<< "$images"
+    done < <(compose_service_images)
     versions_loaded=true
 }
 
@@ -1500,6 +1508,18 @@ run_update_action() {
 
 compose_services() {
     yq -r '.services | keys | .[]' "$COMPOSE_FILE" 2>/dev/null || true
+}
+
+compose_service_images() {
+    # Compose resolves image variables from .env and environment overrides.
+    # Reading the source YAML directly would leave values such as
+    # ${TRAEFIK_IMAGE} unresolved, which cannot be parsed as an image tag.
+    if docker compose -f "$COMPOSE_FILE" config -q >/dev/null 2>&1; then
+        docker compose -f "$COMPOSE_FILE" config 2>/dev/null |
+            yq -r '.services // {} | to_entries[] | select(.value.image != null) | [.key, .value.image] | @tsv'
+    else
+        yq -r '.services // {} | to_entries[] | select(.value.image != null) | [.key, .value.image] | @tsv' "$COMPOSE_FILE" 2>/dev/null
+    fi
 }
 
 compose_images() {
