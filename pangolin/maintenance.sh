@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="Pangolin Maintenance Tool"
-SCRIPT_VERSION="2.4"
+SCRIPT_VERSION="2.5"
 
 # Persistent user configuration. The self-update process replaces only this
 # script; maintenance.conf remains untouched. On every start the documented
@@ -324,7 +324,7 @@ versions_loaded=false
 BACKUP_CONTAINERS_STOPPED=false
 LAST_BACKUP_DIR=""
 
-declare -A ITEMS_ALT=() ITEMS_NEW=() ITEMS_TAGS=() ITEMS_TYPE=() ITEMS_PATH=() ITEMS_REPO=()
+declare -A ITEMS_ALT=() ITEMS_NEW=() ITEMS_() ITEMS_TYPE=() ITEMS_PATH=() ITEMS_REPO=()
 
 normalize_bool() {
     case "${1,,}" in
@@ -566,13 +566,14 @@ resolve_update_level() {
 #   v3.7.8                -> Präfix "v"
 semver_filter() {
     local prefix="$1"
-    local tags="$2"
+    local "$2"
     local escaped_prefix
 
     # Präfix für die Verwendung in einem erweiterten regulären Ausdruck maskieren.
     escaped_prefix=$(printf '%s' "$prefix" | sed -E 's/[][(){}.^$*+?|\]/\\&/g')
 
     printf '%s\n' "$tags" \
+        | sed 's/^v//' \
         | grep -E "^${escaped_prefix}[0-9]+(\.[0-9]+){1,2}$" \
         || true
 }
@@ -615,7 +616,7 @@ version_is_newer() {
 
 filter_tags_by_major() {
     local current="$1"
-    local tags="$2"
+    local "$2"
     local selected_major="$3"
     local prefix tag version major minor patch
 
@@ -630,7 +631,7 @@ filter_tags_by_major() {
 
 filter_tags_by_series() {
     local current="$1"
-    local tags="$2"
+    local "$2"
     local selected_major="$3"
     local selected_minor="$4"
     local prefix tag version major minor patch
@@ -667,7 +668,7 @@ MANUAL_SELECTED_TAG=""
 
 manual_select_tag() {
     local current="$1"
-    local tags="$2"
+    local "$2"
     local filter_choice default_filter_choice choice direct_input prefix candidate
     local selected_major selected_minor filtered_tags version rest i
     local -a majors=() minors=() tag_list=()
@@ -719,13 +720,13 @@ manual_select_tag() {
                 )
                 text "   Verfügbare Minor-Versionen:" "   Available minor versions:"; echo
                 selected_minor=$(choose_from_numbered_list "$(text "Minor-Auswahl" "Minor selection")" 1 "${minors[@]}") || return 1
-                filtered_tags=$(filter_tags_by_series "$current" "$tags" "$selected_major" "$selected_minor")
+                filtered_$(filter_tags_by_series "$current" "$tags" "$selected_major" "$selected_minor")
             else
-                filtered_tags=$(filter_tags_by_major "$current" "$tags" "$selected_major")
+                filtered_$(filter_tags_by_major "$current" "$tags" "$selected_major")
             fi
             ;;
         3)
-            filtered_tags="$tags"
+            filtered_"$tags"
             ;;
         4)
             read_user_input direct_input "   $(text "Version/Tag direkt eingeben" "Enter version/tag directly"): "
@@ -789,7 +790,7 @@ manual_select_tag() {
 
 select_latest_for_level() {
     local current="$1"
-    local tags="$2"
+    local "$2"
     local level="$3"
     local prefix current_version current_major current_minor current_patch
     local next_minor next_major tag version major minor patch
@@ -852,7 +853,8 @@ parse_image() {
     fi
 
     IMAGE_REPO="${image%:*}"
-    IMAGE_TAG="${image##*:}"
+    tag="${image##*:}"
+    tag="${tag#v}"
 
     [[ -n "$IMAGE_REPO" && -n "$IMAGE_TAG" ]]
 }
@@ -914,7 +916,7 @@ register_item() {
     local key="$1"
     local current="$2"
     local latest="$3"
-    local tags="$4"
+    local "$4"
     local type="$5"
     local path="$6"
     local repo="${7:-}"
