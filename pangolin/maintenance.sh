@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="Pangolin Maintenance Tool"
-SCRIPT_VERSION="2.5"
+SCRIPT_VERSION="2.6"
 
 # Persistent user configuration. The self-update process replaces only this
 # script; maintenance.conf remains untouched. On every start the documented
@@ -1388,7 +1388,7 @@ select_backup_set() {
     SELECTED_BACKUP_SET="${sets[$((choice-1))]}"
 }
 
-restore_backup_set() {
+restore_backup_set_impl() {
     local requested="${1:-}" setdir safety_stamp safety_dir confirm
     SELECTED_BACKUP_SET=""
     select_backup_set "$requested" || return 0
@@ -2087,6 +2087,37 @@ show_main_menu() {
     printf '[7] %s\n' "$(text "Systembereinigung" "System cleanup")"
     printf '[8] %s\n' "$(text "Skript-Update prüfen" "Check for script update")"
     printf '[0] %s\n' "$(text "Beenden" "Exit")"
+}
+
+restore_backup_set() {
+    local restore_status=0 stack_was_running=false
+
+    # A restore first creates a safety backup. Traefik access logs and the
+    # Pangolin database are bind-mounted and change while the stack runs,
+    # which makes tar abort that backup with "file changed as we read it".
+    # Stop only services that were running and restore their original state
+    # afterwards, even when the restore is cancelled or fails.
+    if docker compose -f "$COMPOSE_FILE" ps -q 2>/dev/null | grep -q .; then
+        printf '⏹️  %s\n' "$(text "Compose-Stack wird für die Wiederherstellung angehalten …" "Stopping Compose stack for restore …")"
+        docker compose -f "$COMPOSE_FILE" stop
+        stack_was_running=true
+    fi
+
+    if restore_backup_set_impl "$@"; then
+        :
+    else
+        restore_status=$?
+    fi
+
+    if [[ "$stack_was_running" == true ]]; then
+        printf '▶️  %s\n' "$(text "Compose-Stack wird wieder gestartet …" "Restarting Compose stack …")"
+        if ! docker compose -f "$COMPOSE_FILE" up -d; then
+            printf '❌ %s\n' "$(text "Compose-Stack konnte nach der Wiederherstellung nicht gestartet werden." "Could not restart the Compose stack after restore.")" >&2
+            (( restore_status == 0 )) && restore_status=1
+        fi
+    fi
+
+    return "$restore_status"
 }
 
 main_menu() {
