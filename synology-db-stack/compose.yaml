@@ -1,0 +1,81 @@
+name: stack_database
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:18}
+    container_name: database-postgres
+    restart: unless-stopped
+    stop_grace_period: 120s
+    security_opt: [no-new-privileges:true]
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_DB: postgres
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+      PAPERLESS_DB_PASSWORD: ${PAPERLESS_DB_PASSWORD:?Set PAPERLESS_DB_PASSWORD}
+      FORGEJO_DB_PASSWORD: ${FORGEJO_DB_PASSWORD:?Set FORGEJO_DB_PASSWORD}
+    volumes:
+      - ${STACK_DIR:-/volume1/docker/stack_database}/postgres/data:/var/lib/postgresql
+      - ${STACK_DIR:-/volume1/docker/stack_database}/postgres/init:/docker-entrypoint-initdb.d:ro
+    shm_size: 256mb
+    networks: [database-net]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postgres -d postgres']
+      start_period: 60s
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    logging:
+      options: {max-size: '10m', max-file: '3'}
+  mariadb:
+    image: ${MARIADB_IMAGE:-mariadb:11.8}
+    container_name: database-mariadb
+    restart: unless-stopped
+    stop_grace_period: 120s
+    security_opt: [no-new-privileges:true]
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?Set MARIADB_ROOT_PASSWORD}
+      MARIADB_AUTO_UPGRADE: 'false'
+      ROMM_DB_PASSWORD: ${ROMM_DB_PASSWORD:?Set ROMM_DB_PASSWORD}
+      GAME_DB_PASSWORD: ${GAME_DB_PASSWORD:?Set GAME_DB_PASSWORD}
+    volumes:
+      - ${STACK_DIR:-/volume1/docker/stack_database}/mariadb/data:/var/lib/mysql
+      - ${STACK_DIR:-/volume1/docker/stack_database}/mariadb/init:/docker-entrypoint-initdb.d:ro
+    networks: [database-net]
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
+      start_period: 90s
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    logging:
+      options: {max-size: '10m', max-file: '3'}
+  valkey:
+    image: ${VALKEY_IMAGE:-valkey/valkey:9}
+    container_name: database-valkey
+    restart: unless-stopped
+    stop_grace_period: 120s
+    security_opt: [no-new-privileges:true]
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?Set VALKEY_PASSWORD}
+    command:
+      - /bin/sh
+      - -c
+      - 'exec valkey-server --appendonly yes --appendfsync everysec --requirepass "$$VALKEY_PASSWORD"'
+    volumes:
+      - ${STACK_DIR:-/volume1/docker/stack_database}/valkey/data:/data
+    networks: [database-net]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$VALKEY_PASSWORD" valkey-cli ping | grep -qx PONG']
+      start_period: 30s
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    logging:
+      options: {max-size: '10m', max-file: '3'}
+networks:
+  database-net:
+    name: database-net
+    driver: bridge

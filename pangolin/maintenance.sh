@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_NAME="Pangolin Maintenance Tool"
-SCRIPT_VERSION="2.6"
+SCRIPT_VERSION="2.7"
 
 # Persistent user configuration. The self-update process replaces only this
 # script; maintenance.conf remains untouched. On every start the documented
@@ -875,6 +875,51 @@ fetch_github_tags() {
     printf '%s\n' "$response" | jq -r '.[].name'
 }
 
+release_repository_for_image() {
+    local repository="$1"
+
+    case "$repository" in
+        github.com/*) printf '%s\n' "${repository#github.com/}" ;;
+        fosrl/*) printf '%s\n' "$repository" ;;
+        docker.io/fosrl/*) printf '%s\n' "${repository#docker.io/}" ;;
+        ghcr.io/fosrl/*) printf '%s\n' "${repository#ghcr.io/}" ;;
+        *) return 1 ;;
+    esac
+}
+
+extract_github_release_warnings() {
+    # GitHub Markdown alert blocks use the form:
+    # > [!WARNING]
+    # > Text of the warning
+    # Also include CAUTION and DANGER alerts, as they need the same attention.
+    awk '
+        /^[[:space:]]*>?[[:space:]]*\[!(WARNING|CAUTION|DANGER)\][[:space:]]*$/ {
+            active=1
+            next
+        }
+        active {
+            line=$0
+            sub(/^[[:space:]]*>[[:space:]]?/, "", line)
+            if (line ~ /^[[:space:]]*$/) {
+                if (printed) exit
+                next
+            }
+            if (line ~ /^[[:space:]]*\[![A-Z]+\][[:space:]]*$/ || line ~ /^#{1,6}[[:space:]]/) exit
+            print line
+            printed=1
+        }
+    '
+}
+
+fetch_github_release_warnings() {
+    local repository="$1" tag="$2" response
+
+    response=$(curl -fsSL \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${repository}/releases/tags/${tag}") || return 1
+    jq -r '.body // empty' <<< "$response" | extract_github_release_warnings
+}
+
 fetch_dockerhub_tags() {
     local repository="$1"
     local url="https://hub.docker.com/v2/repositories/${repository}/tags?page_size=100"
@@ -1005,7 +1050,7 @@ load_available_versions() {
             [[ -n "$all_tags" ]] || continue
             valid=$(semver_filter "$prefix" "$all_tags")
             latest=$(printf '%s\n' "$valid" | sort -Vr | head -n1)
-            register_item "plugin:$plugin" "$current" "$latest" "$valid" plugin "$plugin"
+            register_item "plugin:$plugin" "$current" "$latest" "$valid" plugin "$plugin" "$repo"
         done <<< "$plugins"
     fi
 
@@ -1032,6 +1077,31 @@ load_available_versions() {
     versions_loaded=true
 }
 
+show_release_warnings() {
+    local key repository release_repository warning
+    local shown=false
+
+    while IFS= read -r key; do
+        [[ -n "${ITEMS_NEW[$key]:-}" && "${ITEMS_NEW[$key]}" != "${ITEMS_ALT[$key]}" ]] || continue
+        repository="${ITEMS_REPO[$key]:-}"
+        release_repository=$(release_repository_for_image "$repository" 2>/dev/null || true)
+        [[ -n "$release_repository" ]] || continue
+        warning=$(fetch_github_release_warnings "$release_repository" "${ITEMS_NEW[$key]}" 2>/dev/null || true)
+        [[ -n "$warning" ]] || continue
+
+        if [[ "$shown" == false ]]; then
+            echo
+            printf '%s\n' "$(text "Release-Warnungen" "Release warnings")"
+            echo "────────────────────────────────────────────────────────────────────────────────"
+            shown=true
+        fi
+        printf '⚠️  %s (%s → %s)\n' "$key" "${ITEMS_ALT[$key]}" "${ITEMS_NEW[$key]}"
+        printf '%s\n' "$warning" | sed 's/^/    /'
+    done < <(printf '%s\n' "${!ITEMS_ALT[@]}" | sort)
+
+    [[ "$shown" == false ]] || echo "────────────────────────────────────────────────────────────────────────────────"
+}
+
 show_overview() {
     local key alt neu patch_target next_minor_target minor_target next_major_target major_target status
     updates_available=false
@@ -1043,6 +1113,7 @@ show_overview() {
         printf 'ℹ️ %s\n' "$(text "Keine auswertbaren Plugins oder Container gefunden." "No usable plugins or containers found.")"
         return
     fi
+    show_release_warnings
     while IFS= read -r key; do
         alt="${ITEMS_ALT[$key]}"; neu="${ITEMS_NEW[$key]}"
         patch_target=$(select_latest_for_level "$alt" "${ITEMS_TAGS[$key]}" patch || true)

@@ -1,0 +1,10 @@
+# Merge into each application compose (not a standalone full app compose).
+services:
+  example-app:
+    networks:
+      - default
+      - database-net
+networks:
+  database-net:
+    external: true
+    name: database-net

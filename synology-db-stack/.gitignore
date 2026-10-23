@@ -1,0 +1,6 @@
+.env
+credentials/
+backups/
+postgres/data/
+mariadb/data/
+valkey/data/
