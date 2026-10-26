@@ -16,7 +16,6 @@ services:
       FORGEJO_DB_PASSWORD: ${FORGEJO_DB_PASSWORD:?Set FORGEJO_DB_PASSWORD}
     volumes:
       - ${STACK_DIR:-/volume1/docker/stack_database}/postgres/data:/var/lib/postgresql
-      - ${STACK_DIR:-/volume1/docker/stack_database}/postgres/init:/docker-entrypoint-initdb.d:ro
     shm_size: 256mb
     networks: [database-net]
     healthcheck:
@@ -41,7 +40,6 @@ services:
       GAME_DB_PASSWORD: ${GAME_DB_PASSWORD:?Set GAME_DB_PASSWORD}
     volumes:
       - ${STACK_DIR:-/volume1/docker/stack_database}/mariadb/data:/var/lib/mysql
-      - ${STACK_DIR:-/volume1/docker/stack_database}/mariadb/init:/docker-entrypoint-initdb.d:ro
     networks: [database-net]
     healthcheck:
       test: [CMD, healthcheck.sh, --connect, --innodb_initialized]

@@ -1,137 +1,228 @@
-# Synology Database Stack — PostgreSQL + MariaDB + Valkey
+# Synology Database Manager – Zentrale und externe Datenbank-Backups
 
-## Overview
+Diese Anleitung beschreibt zwei **separate Bash-Skripte** für eine Synology NAS:
 
-Centralized 3-container stack for Synology Container Manager / Docker Compose.
+1. **`db-manager.sh`** (bei Installation als `db-manager.sh`): Verwaltung der zentralen Docker-Dienste **`database-postgres`**, **`database-mariadb`** und **`database-valkey`** inklusive Erstellung, Backup, Restore und eingeschränkter Löschfunktion.
+2. **`db-export.sh`**: Sicherung von **MariaDB/MySQL** und **PostgreSQL** aus anderen Docker-Containern oder über **TCP/IP** von anderen Rechnern. Dieses Skript **sichert**, stellt aber selbst keine Datenbanken wieder her.
 
-- PostgreSQL: `paperless` (user `paperlessuser`), `forgejo` (user `forgejo`)
-- MariaDB: `romm` (user `romm`), `game` (user `gameuser`)
-- Valkey: shared service for Paperless and RomM. **One global password, not app isolation.**
-- Private external Docker network: `database-net`
-- No host-exposed SQL/cache ports; containers reachable only from attached Docker networks.
-- Manager creates additional databases, app logins, passwords and backs up/restores data.
+> **Wichtig:** Die Anleitung basiert auf den bereitgestellten Skriptversionen. Ein Live-Test auf deiner NAS und ein vollständiger Test-Restore wurden nicht durchgeführt. Vor produktiver Nutzung mit einer Testdatenbank prüfen.
 
-**Compatibility:** The image tags are version-family starting points, not compatibility guarantees. Verify tag availability (`docker compose pull`) and application support before upgrading. Never auto-update database major versions.
+## 1. Voraussetzungen
 
-## 1. Copy to Synology
+- Synology NAS mit SSH, Bash, Docker/Container Manager und Zugriff auf die relevanten Container.
+- Für den zentralen Manager: laufende Container `database-postgres`, `database-mariadb`, `database-valkey`, passende Datenbankprogramme darin, `gzip`, `tar`, `sha256sum`, `openssl` und eine `.env` im **aktuellen Arbeitsverzeichnis** mit `MARIADB_ROOT_PASSWORD`, `POSTGRES_ADMIN_PASSWORD` und `VALKEY_PASSWORD`. Die zentrale PostgreSQL-Anbindung erwartet den Linux- und SQL-Benutzer `postgres`.
+- Für PostgreSQL: `pg-tools.sh` neben beide Skripte kopieren. Docker muss laufen und fehlende offizielle `postgres:<Hauptversion>`-Images herunterladen können. Lokale PostgreSQL-Binaries werden für externe Verbindungen und Restore nicht benötigt. Für MariaDB/MySQL zusätzlich `my-tools.sh` neben beide Skripte kopieren. Externe Verbindungen und der zentrale Restore verwenden ebenfalls temporäre Werkzeug-Container.
+- Für TCP: Netzwerkzugriff, richtiger Port, erlaubte Benutzeranmeldung, ausreichende Leserechte für Daten und Dump von Routinen/Triggern/Events (sofern verwendet). **Datenbankports nicht ungeschützt ins Internet freigeben**; VPN/privates Netz und TLS, sofern sinnvoll, bevorzugen.
 
-Copy the project folder to `/volume1/docker/stack_database/` (preserve hidden `.env.example`). SSH in:
+## 2. Installation
+
+Skripte in `/volume1/docker/stack_database/` kopieren. Vor Ersetzen einer bestehenden Version ein Backup anlegen:
 
 ```bash
 cd /volume1/docker/stack_database
-chmod 700 scripts/*.sh
-chmod 644 postgres/init/*.sh mariadb/init/*.sh
-./scripts/setup.sh
-# Make encrypted/offsite backup of .env NOW.
-docker compose config --quiet
-docker compose pull
-docker compose up -d
-docker compose ps
-./scripts/db-manager.sh list all
+cp -p db-manager.sh db-manager.sh.vor-update.bak   # falls vorhanden
+chmod 700 db-manager.sh db-export.sh
+bash -n db-manager.sh
+bash -n db-export.sh
 ```
 
-`setup.sh` creates `.env` once with 7 different random passwords. Permissions: `.env` 600, credentials and backups 700. Make sure the Synology ACLs permit Docker to write the DB data folders; do not `chmod 777`. MariaDB and PostgreSQL initialization scripts run **only when their data directories are empty**. Run on a newly initialized stack first and verify backups *before* migrating existing data.
-
-## 2. Passwords
-
-`.env` defines distinct administrator passwords:
-- `POSTGRES_ADMIN_PASSWORD` (database admin `postgres`)
-- `MARIADB_ROOT_PASSWORD` (admin `root`)
-- `VALKEY_PASSWORD` (one shared cache authentication password)
-
-Application database passwords are also separately configurable on *first initialization*. On an already initialized database, changing `.env` alone **does not rotate passwords**. Use `db-manager.sh rotate ENGINE NAME` for *manager-created* app users. This changes the database user and managed credentials file, but you must update the consuming app credentials and restart its service. For initial seeded users (`paperlessuser`, `forgejo`, `romm`, `gameuser`), use SQL `ALTER ROLE` / `ALTER USER` with appropriately updated app config. Administrator and Valkey password rotations require controlled maintenance and updating the relevant authentication configuration; no unsupported automatic admin rotation is implied.
-
-**Security model:** Docker administrators can inspect container env variables; protect NAS administrators and Docker socket. This starter package stores passwords in `.env` and per-app `credentials/*.env` (not Docker secrets). Do not commit them to Git or send them to third parties. If the NAS has many admins/users, move to Docker secrets and least-privilege ACL design.
-
-## 3. Manager
+Den zentralen Manager **aus diesem Verzeichnis starten**, da er `.env` relativ zum aktuellen Verzeichnis lädt:
 
 ```bash
-./scripts/db-manager.sh                       # interactive menu
-./scripts/db-manager.sh status
-./scripts/db-manager.sh list all
-./scripts/db-manager.sh create postgres myapp
-./scripts/db-manager.sh create mariadb anotherapp
-./scripts/db-manager.sh rotate postgres myapp
-./scripts/db-manager.sh backup all
-./scripts/db-manager.sh backup postgres paperless
-./scripts/db-manager.sh backup mariadb romm
-./scripts/db-manager.sh backup valkey
-./scripts/db-manager.sh restore postgres myapp /volume1/docker/stack_database/backups/postgres/myapp_DATE.dump
-./scripts/db-manager.sh restore mariadb anotherapp /volume1/docker/stack_database/backups/mariadb/anotherapp_DATE.sql.gz
-./scripts/db-manager.sh restore-valkey /volume1/docker/stack_database/backups/valkey/all_DATE.tar.gz
+cd /volume1/docker/stack_database
+./db-manager.sh
 ```
 
-Name restrictions: `[a-z][a-z0-9_]{0,30}`. `create` aborts if a DB or user exists. Generated 64-hex passwords are saved to `credentials/<app>-<engine>.env` with chmod 600. A rare interruption during creation could leave a partial database/user; do not rerun blindly, inspect and clean up manually.
-
-**Restore safety:** SQL restore is only supported into an **existing EMPTY target database**, for a single-database backup, with explicit confirmation. It will reject a nonempty target. For an application with complex ownership, ensure the target is owned by the correct app user. All-instance SQL backups (`backup all`) are **disaster-recovery archives**, restored only to fresh compatible servers using documented PostgreSQL and MariaDB procedures, not by this interactive restore command. Do not pipe them into active instances. Each restore should be rehearsed on an isolated test stack.
-
-**Valkey restore** needs all client applications stopped. It stops Valkey, archives the old `data/` directory, installs the backup, restarts Valkey. Restoration may roll back queues/jobs. It never overwrites the old copy without keeping it, but needs enough free disk space.
-
-## 4. Backups
-
-- SQL per database: `pg_dump -Fc` / `mariadb-dump`.
-- All SQL data: `pg_dumpall` (roles included) / `mariadb-dump --all-databases` (includes internal metadata).
-- Valkey: **brief outage** while copying persisted AOF/RDB data. AOF `appendfsync everysec` is configured, but test crash consistency.
-- Backups go under `backups/<engine>/`; the manager adds SHA-256 checksums.
-- **No automatic pruning**: configure retention in Synology Hyper Backup, or add and test a controlled retention job. The backup set also needs offsite/second-NAS copies; local backups are not disaster recovery.
-- App files are NOT included. Independently backup Paperless documents, Forgejo repos, RomM ROM library, game saves, application config and `.env`/credentials. Encrypt credential backups.
-- For Synology Task Scheduler run as a Docker-authorized user or root:
+Den externen Backup-Manager starten:
 
 ```bash
-/bin/bash /volume1/docker/stack_database/scripts/db-manager.sh backup all
+cd /volume1/docker/stack_database
+./db-export.sh
 ```
 
-Schedule once nightly during low usage. Verify backup artifacts, test restores, and alert on non-zero exit. MariaDB `--single-transaction` is consistent for InnoDB with no concurrent DDL; simultaneous cross-engine consistency is not guaranteed. Avoid changing schemas while dumps run.
+Der externe Manager kann alternativ durch `DB_MANAGER_BASE=/anderer/pfad` seinen Basisordner wechseln. **Dann liegen die Backups nicht automatisch im Verzeichnis, das der zentrale Restore-Manager durchsucht.**
 
-## 5. Application connectivity
+## 3. Zentraler `db-manager.sh` – Menü
 
-Attach **each application's actual service** to the shared network:
+| Punkt | Funktion |
+|---|---|
+| 1 | Status der `database-*`-Container |
+| 2 | Datenbanken von PostgreSQL und MariaDB sowie belegte Valkey-Datenbanken auflisten |
+| 3 | Anwendungsdatenbank **plus gleichnamigen Benutzer** anlegen, Zugangsdaten speichern |
+| 4 | Gesamtsicherung aller drei Dienste (`postgres`, `mariadb`, `valkey`) |
+| 5 | Einzel-Backup einer ausgewählten SQL-Datenbank oder Valkey-Snapshot |
+| 6 | Einzelne PostgreSQL-/MariaDB-Datenbank aus Backup wiederherstellen |
+| 7 | Passwort des verwalteten Datenbankbenutzers erneuern |
+| 8 | Valkey aus Snapshot wiederherstellen |
+| 9 | Backup-Dateien anzeigen |
+| 10 | **Verwaltete** Datenbank plus gleichnamigen Benutzer nach Sicherungsbackup löschen |
+| 11 | **Alle Anwendungsdatenbanken einzeln** sichern und zusätzlich Valkey-Snapshot erstellen |
+| 0 | Beenden |
 
-```yaml
-services:
-  app:
-    networks: [default, database-net]
-networks:
-  database-net:
-    external: true
-    name: database-net
+**Punkt 4 vs. 11:** Punkt 4 erzeugt einen dienstweiten Gesamtdump für PostgreSQL und MariaDB und einen Valkey-Snapshot. Punkt 11 erzeugt hingegen pro Anwendungsdatenbank einen getrennten Dump, der über Menüpunkt 6 auswählbar ist; Valkey wird weiterhin als gesamter Snapshot gesichert.
+
+Zusätzliche Kommandozeilenbeispiele:
+
+```bash
+./db-manager.sh status
+./db-manager.sh list all
+./db-manager.sh backup all
+./db-manager.sh backup postgres meineapp
+./db-manager.sh backup-each
+./db-manager.sh restore postgres meineapp /volume1/docker/stack_database/backups/postgres/meineapp_YYYYMMDD_HHMMSS.dump safe
 ```
 
-Use:
+Die Restore-Option `overwrite` ersetzt vorhandene Daten **destruktiv**; nur nach genauer Prüfung verwenden. Der Manager fordert einen exakten Bestätigungstext an und erstellt davor ein Sicherheitsbackup. **Anwendungen vor Restore und Löschung stoppen.**
 
-| App | Host:port | Database | User |
-| --- | --- | --- | --- |
-| Paperless | `database-postgres:5432` | `paperless` | `paperlessuser` |
-| Forgejo | `database-postgres:5432` | `forgejo` | `forgejo` |
-| RomM | `database-mariadb:3306` | `romm` | `romm` |
-| Games | `database-mariadb:3306` | `game` | `gameuser` |
-| Paperless Valkey | `database-valkey:6379` | Redis-compatible URL | shared password |
-| RomM Valkey | `database-valkey:6379` | Redis-compatible client | shared password |
+### Löschfunktion (Punkt 10)
 
-Paperless: `PAPERLESS_REDIS=redis://:<VALKEY_PASSWORD>@database-valkey:6379/0` and `PAPERLESS_DBHOST=database-postgres`. The `REDIS` name in Paperless's environment variable does not imply running Redis. RomM's Valkey environment variable spelling is release-dependent; check the release docs (commonly `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWD`). A *shared* Valkey means one app could affect another app's keys or queues; separate Valkey containers or tested ACL/key-prefix isolation are preferable for strict independence.
+Nur für Datenbanken mit passender Zugangsdaten-Datei unter `credentials/`; Datenbank und Benutzer müssen denselben Namen haben. Vor dem Löschen erzeugt das Skript einen geprüften Einzel-Dump und archiviert anschließend die Zugangsdaten unter `credentials/deleted/`. Bestehende Backups bleiben erhalten. Eine PostgreSQL-Rolle kann nicht gelöscht werden, wenn weitere Abhängigkeiten bestehen; der Vorgang kann teilweise erfolgreich sein (Datenbank gelöscht, Rolle bleibt bestehen).
 
-The central `.env` is not magically inherited by the other Compose projects: transfer the appropriate password to each app's protected `.env` or secret configuration.
+## 4. Externer Manager – Profile und Sicherungen
 
-## 6. Migrating old containers
+Menü:
 
-1. Record old DB engine/major versions; back up source databases and app files while in a consistent state.
-2. Never mount existing PostgreSQL 14 data folders into PostgreSQL 18 directly. **Use compatible logical dump/restore or supported upgrade processes.** Likewise for MariaDB major upgrades.
-3. Stop the old app while taking final snapshots, initialize this new stack on **empty** directories, and migrate one app at a time into its own new database.
-4. Test login and actual application data before removing old containers. The pre-created databases are empty; first-time application startup is fine, existing-app migration requires restoration.
-5. A changed Valkey host is not necessarily a seamless move of pending queues/jobs. Stop clients and follow application migration guidance.
+| Punkt | Funktion |
+|---|---|
+| 1 | Verbindungsprofil anlegen (Docker oder TCP/IP) |
+| 2 | Gespeichertes Profil auswählen und Verbindung testen |
+| 3 | Datenbank auswählen oder **alle gelisteten Anwendungsdatenbanken** einzeln sichern |
+| 4 | Backups anzeigen |
+| 0 | Beenden |
 
-## 7. Disaster recovery notes
+Beim Anlegen eines Profils werden folgende Angaben abgefragt:
 
-Full PostgreSQL backup: restore a `pg_dumpall` SQL file on a fresh compatible PostgreSQL instance with `psql -X -v ON_ERROR_STOP=1` after testing user/role conflicts. Full MariaDB backup: restore on fresh same-major MariaDB to avoid system table conflicts; for different majors, use more targeted logical migration. Valkey data archive may contain secrets and must be encrypted at rest/offsite.
+- Profilname (z. B. `homeserver`)
+- Verbindungstyp: **Docker-Container** oder **TCP/IP**
+- Typ: **MariaDB/MySQL** oder **PostgreSQL**
+- Docker-Containername bzw. IP/Hostname
+- Port (Standard 3306 oder 5432), SQL-Benutzer, **Wartungsdatenbank** und Passwort
 
-**Not included:** Web UI, direct NAS access, live production restore guarantees, automatic administrator password rotation, auto updates. Configure Synology firewall, offsite backups, UPS, disk monitoring, and change control independently.
+Bei Docker-Verbindungen verwendet das Skript **TCP `127.0.0.1` innerhalb des Containers**, nicht einen Unix-Socket. Das funktioniert nur, wenn der Datenbankserver darin auf der gewählten Adresse und dem Port lauscht. Der Datenbankbenutzer kann frei gewählt werden; es wird **nicht** pauschal `postgres` vorausgesetzt.
 
-## Menü-Erweiterung: Restore-Auswahl und Überschreiben
+Gespeicherte Profile liegen unter:
 
-`./scripts/db-manager.sh` bietet nummerierte Auswahl von SQL-Datenbanken und datierten Einzelbackups. Das neueste Backup steht an erster Stelle und ist standardmäßig ausgewählt (Enter). Beim Restore kannst du zwischen *nur leere Datenbank* und *bestehende Datenbank überschreiben* wählen. Überschreiben erfordert das wörtliche Bestätigen von `OVERWRITE postgres NAME` bzw. `OVERWRITE mariadb NAME` und erzeugt **zwingend vorher ein Sicherheitsbackup**. Halte vorher die betroffene Anwendung an; laufende Verbindungen und gleichzeitig schreibende Anwendungen können Daten inkonsistent machen. Nach Abbruch oder Fehler muss die Sicherung gegebenenfalls manuell wiederhergestellt werden. Der Restore ist keine automatische Transaktion.
+```text
+/volume1/docker/stack_database/external-db-profiles/
+  homeserver.conf      # Host, Port, Benutzer usw.
+  homeserver.secret    # Passwort im Klartext
+```
 
-CLI: `./scripts/db-manager.sh restore postgres paperless /volume1/docker/stack_database/backups/postgres/paperless_YYYYMMDD_HHMMSS.dump overwrite`. Ohne letztes Argument (`safe`) ist nur ein leeres Ziel erlaubt. Menüpunkt 8 ermöglicht Restore eines Valkey-Backups nach Auswahl; Valkey kann nicht pro Anwendung getrennt wiederhergestellt werden.
+Dateirechte: Profilverzeichnis `700`, Dateien `600`. **Passwörter werden nicht verschlüsselt.** Verzeichnis nicht in frei lesbare Freigaben oder öffentliche Git-Repositories kopieren. Das derzeitige Skript bietet **kein Menü zum Ändern/Löschen** von Profilen; hierfür Dateien nach Prüfung manuell verwalten.
 
-Einzelbackups eignen sich für den interaktiven Restore. Vollständige SQL-Backups (`all_*.sql.gz`) dienen der kompletten Wiederherstellung auf einem separaten, frischen Datenbankserver und werden **nicht** als Einzel-Datenbank-Restore angeboten. Passwortrotation gilt nur für vom Manager angelegte Konten mit gespeicherten Credentials; Administratorpasswörter werden dabei nicht geändert.
+## 5. Backup-Ablage und Restore-Kompatibilität
 
-**Nicht implementiert:** interaktive Löschung von Datenbanken/Benutzern und Valkey-ACL-Benutzerverwaltung. Das ist bewusst nicht durch ungetestete destruktive Menüpunkte ersetzt worden.
+Beide Manager legen die SQL-Einzelbackups standardmäßig unter `/volume1/docker/stack_database/backups/` ab:
+
+```text
+backups/
+├── postgres/
+│   ├── meineapp_20261025_180000.dump
+│   └── all_20261025_180000.sql.gz
+├── mariadb/
+│   ├── wordpress_20261025_180000.sql.gz
+│   └── all_20261025_180000.sql.gz
+└── valkey/
+    └── all_20261025_180000.tar.gz
+```
+
+- **PostgreSQL-Einzeldump:** `pg_dump -Fc` (`.dump`); Restore mit `pg_restore` über Menüpunkt 6.
+- **MariaDB/MySQL-Einzeldump:** SQL ohne `CREATE DATABASE`/`USE` (`.sql.gz`); Import erfolgt in die **vorher ausgewählte Ziel-DB** über Menüpunkt 6.
+- **Valkey:** Dateisystem-Snapshot (`.tar.gz`), Restore nur über Menüpunkt 8.
+- Ergänzende Dateien: `.sha256`-Prüfsummen; externe Sicherungen zusätzlich `.source.txt` mit Herkunftsangaben. Der zentrale Restore-Dialog listet die eigentlichen Dump-Dateien.
+
+**Für den Restore muss die Zieldatenbank bereits existieren.** Ihr Name muss zum Sicherungsnamen passen. Der zentrale Restore-Manager unterstützt nur Datenbanknamen gemäß `^[a-z][a-z0-9_]{0,30}$`. SQL-Backups von außen können aufgrund von Quell-/Zielversionsunterschieden, Erweiterungen, Collations, Berechtigungen oder Datenbankobjekten trotzdem inkompatibel sein.
+
+**Wichtig bei Namensgleichheit:** Beide Skripte speichern Backups gleicher Datenbanknamen im **selben** Engine-Ordner. Die zusätzliche `.source.txt` kennzeichnet die Herkunft externer Sicherungen, wird aber im Restore-Auswahlmenü **nicht angezeigt**. Deshalb vor einem Restore die Herkunft kontrollieren. Identische Namen plus gleiche sekundengenaue Zeitstempel können kollidieren.
+
+Der zentrale Manager erstellt Gesamtsicherungen mit `all_...`, aber sein SQL-Restore-Menü unterstützt **nur einzelne Datenbanken**, keine komplette `all_`-Wiederherstellung.
+
+## 6. Sicheren Restore durchführen
+
+1. Datenbanktyp, **Zieldatenbank und Quelle** eindeutig zuordnen; `.source.txt` und Prüfsumme gegebenenfalls prüfen.
+2. Apps/Clients stoppen, die diese Datenbank benutzen.
+3. Ziel-Datenbank bei Bedarf über Menüpunkt 3 anlegen. Für externe Dumps den Ziel-Benutzer und erforderliche Rechte prüfen.
+4. Zentralen Manager starten und **6) SQL-Restore** auswählen.
+5. Datenbank und Backup-Nummer wählen.
+6. `1` für Restore **nur in leere DB** oder `2` für **bestehende DB überschreiben**.
+7. Bei Überschreiben exakten Text eingeben, beispielsweise `OVERWRITE mariadb meineapp` (nicht nur `OVERWRITE`).
+8. Nach Restore Daten, Berechtigungen und App-Funktion prüfen; erst dann Clients wieder starten.
+
+**Achtung:** Die `safe`-Option schützt nur vor dem Einspielen in eine nichtleere DB, nicht vor jedem inkompatiblen oder schadhaften Dump. Ein verifiziertes Backup sollte mindestens einmal in einer **separaten Testumgebung** erfolgreich wiederhergestellt werden.
+
+## 7. Backup-Dateien prüfen
+
+```bash
+# gzip-Integrität (MariaDB)
+gzip -t /volume1/docker/stack_database/backups/mariadb/meineapp_YYYYMMDD_HHMMSS.sql.gz
+
+# SHA-256-Datei prüfen
+cd /volume1/docker/stack_database/backups/mariadb
+sha256sum -c meineapp_YYYYMMDD_HHMMSS.sql.gz.sha256
+
+# PostgreSQL-Archiv prüfen (benötigt pg_restore)
+pg_restore -l /volume1/docker/stack_database/backups/postgres/meineapp_YYYYMMDD_HHMMSS.dump
+```
+
+`gzip -t`, eine Prüfsumme oder `pg_restore -l` beweisen **keine** vollständige erfolgreiche Datenwiederherstellung.
+
+## 8. Fehlerbehebung
+
+| Meldung / Problem | Erklärung / Maßnahme |
+|---|---|
+| `FATAL: role "postgres" does not exist` | Bei externen Quellen im Profil den **tatsächlichen SQL-Benutzer** eintragen. Der zentrale Manager setzt für seinen festgelegten PostgreSQL-Container weiterhin `postgres` voraus. |
+| `connection refused` | IP, Port, Firewall, Docker-Port-Konfiguration und `listen_addresses` bzw. Bind-Adresse prüfen. |
+| `password authentication failed` | Benutzer, Passwort und Server-Authentifizierung prüfen. |
+| `No application databases` | Es wurden keine sichtbaren Anwendungsdatenbanken gefunden oder die Abfrage schlug fehl. Rechte und Verbindung testen. |
+| `Canceled` nach `OVERWRITE` | Die ganze verlangte Zeichenfolge eingeben, z. B. `OVERWRITE mariadb backup`. |
+| `mariadb-dump: command not found` / `pg_dump: command not found` | Geeignete Clientprogramme im NAS-System (TCP) bzw. Container (Docker) bereitstellen. |
+| Externer Dump nicht im Restore-Menü | Backup-Pfad, Datenbanknamen, Dateiendung und passenden Engine-Ordner prüfen; `DB_MANAGER_BASE` darf nicht abweichen. |
+| PostgreSQL-Restore schlägt fehl | Versionen/Erweiterungen/Rollen/Rechte/Ziel-DB und Fehlermeldung von `pg_restore` prüfen. |
+
+## 9. Wichtige Grenzen und Sicherheit
+
+- Der zentrale Manager arbeitet auf festen lokalen Containern. Der externe Manager dient dem **Backup**, nicht dem Management/Löschen entfernter Datenbanken.
+- Beim externen Manager sind Profile und Passwörter lokal auf der NAS gespeichert. `docker exec -e` bzw. `env` geben Geheimnisse an Child-Prozesse weiter; Nutzer mit Administrator-/Docker-Zugriff können diese potenziell sehen.
+- `--single-transaction` bei MariaDB schützt nicht zuverlässig bei gleichzeitig laufenden Schemaänderungen und garantiert bei nichttransaktionalen Tabellen nicht dieselbe Konsistenz.
+- Weder die Datenbank-Dumps noch Valkey-Snapshots ersetzen eine versionierte, räumlich getrennte Offsite-Sicherung. Backups regelmäßig automatisiert prüfen und mindestens einen Test-Restore durchführen.
+- **Menüpunkt 10, Restore mit `overwrite` und Valkey-Restore sind destruktiv.** Vorher Sicherung und Stillstand der betroffenen Anwendungen sicherstellen.
+
+---
+
+**Stand:** 25.10.2026 · Dokumentiert für `db-manager.sh` und `db-export.sh` aus dieser Unterhaltung.
+
+## Automatische PostgreSQL-Werkzeuge
+
+`db-export.sh` ermittelt die Server-Hauptversion mit `psql` aus `postgres:18` und sichert mit `pg_dump` aus dem passenden Image (z. B. `postgres:15` für Veeam 15.18). Die Werkzeugversion steht zusätzlich in `.source.txt`. Der zentrale Manager sichert weiterhin mit den passenden Werkzeugen im eigenen Datenbankcontainer.
+
+`db-manager.sh` liest vor einem Restore die im Archiv gespeicherte pg_dump-Version und verwendet das entsprechende `pg_restore`. Ein älteres Restore-Ziel wird vor Sicherheitsbackup und Überschreiben abgelehnt. Auch bestehende Dumps ohne Metadaten werden geprüft. Diese Prüfung ersetzt keinen Test-Restore; Erweiterungen und andere Versionsunterschiede können weiterhin relevant sein.
+
+Die Werkzeug-Container werden nach jedem Aufruf entfernt; heruntergeladene Images bleiben für weitere Aufrufe verfügbar. TCP-Verbindungen verwenden das Host-Netzwerk der NAS, Docker-Verbindungen den Netzwerk-Namespace des gewählten Containers. Es werden keine Datenverzeichnisse eingebunden und keine zusätzlichen Datenbankserver gestartet. Für die initiale Versionsabfrage/Archivprüfung lässt sich `PG_BOOTSTRAP_MAJOR` setzen (Standard `18`). PostgreSQL ab Hauptversion 10 wird unterstützt.
+
+Beim Update **alle vier Dateien** `db-export.sh`, `db-manager.sh`, `pg-tools.sh` und `my-tools.sh` nach `/volume1/docker/stack_database/` kopieren. Danach:
+
+```bash
+cd /volume1/docker/stack_database
+bash -n pg-tools.sh && bash -n db-export.sh && bash -n db-manager.sh
+./db-export.sh
+```
+
+## Automatische MariaDB/MySQL-Werkzeuge
+
+`my-tools.sh` wird von beiden Managern benötigt. Externe Verbindungstests, Datenbanklisten und Backups nutzen kurzlebige Container, sowohl bei TCP/IP als auch bei Docker-Quellen. Eine Abfrage von `VERSION()` und `@@version_comment` mit `mariadb:11.8` erkennt MariaDB oder MySQL und wählt anschließend `mariadb:<major.minor>` bzw. `mysql:<major.minor>`. Das Bootstrap-Image lässt sich mit `MARIADB_BOOTSTRAP_IMAGE` anpassen. Fehlende Images lädt Docker automatisch; ist ein Tag für die NAS-Architektur nicht verfügbar, schlägt der Vorgang fehl.
+
+Dumps verwenden `mariadb-dump` bzw. `mysqldump`. MySQL-Dumps deaktivieren GTID-Übernahme und Tablespace-Dumps; ab MySQL 8 zusätzlich Column Statistics. Das Werkzeug-Image wird in `.source.txt` gespeichert. Der zentrale MariaDB-Restore verwendet den zum Zielserver passenden temporären Client; zentrale Backups bleiben bei den Tools im laufenden Container. Ein Wechsel zwischen MySQL und MariaDB oder zu älteren Servern garantiert keine SQL-Kompatibilität.
+
+Die Container starten nur das Werkzeug und werden anschließend entfernt. TCP verwendet das Host-Netzwerk, Docker den Netzwerk-Namespace der Quelle bzw. des Ziels. Lokale MariaDB-Programme auf DSM sind dafür nicht nötig. Images bleiben im Docker-Cache.
+
+### Restore privilegierter PostgreSQL-Objekte
+
+Für Erweiterungen und C-Funktionen wird eine eindeutige temporäre PostgreSQL-Rolle mit `NOLOGIN SUPERUSER` angelegt. Der komplette Import erfolgt unter dieser Rolle in einer Transaktion. Danach werden ausschließlich deren Objekte an den Ziel-Datenbankbesitzer übertragen und die temporäre Rolle entfernt. Die Anwendungsrolle erhält keine Superuser-Rechte. Bei Importfehlern wird die Transaktion zurückgerollt und die temporäre Rolle bereinigt; scheitert die Bereinigung, meldet das Skript den Rollennamen. Nur vertrauenswürdige Dumps importieren: deren SQL wird mit Administratorrechten ausgeführt.
+
+### Valkey-Datenbanken anzeigen
+
+Menüpunkt 2 und `./db-manager.sh list all` zeigen auch Valkey an. `./db-manager.sh list valkey` zeigt nur Valkey. Die Ausgabe von `INFO keyspace` enthält pro belegter nummerierter Datenbank Schlüsselanzahl (`keys`), Schlüssel mit Ablaufzeit (`expires`) und mittlere Restlaufzeit (`avg_ttl`, Millisekunden). Leere Datenbanken werden nicht aufgeführt; ist Valkey leer, erscheint eine ausdrückliche Meldung.
+
+### Valkey-Clients zuordnen
+
+Die Valkey-Anzeige ergänzt `CLIENT LIST` um ACL-Benutzer, Client-Adresse, ausgewählte DB und Client-Namen. IP-Adressen werden mit IPv4/IPv6-Adressen aus `docker network inspect` der lokal an Valkey angeschlossenen Netzwerke verglichen. Mehrere Treffer werden angezeigt. Das ist eine Momentaufnahme und ein IP-Abgleich, kein sicherer Identitätsnachweis: gemeinsame ACL-Benutzer (`default`), NAT, andere Docker-Hosts und Host-Netzwerke begrenzen die Zuordnung. Nicht verbundene Anwendungen sind nicht sichtbar.
