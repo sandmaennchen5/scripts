@@ -177,7 +177,7 @@ backup_each() {
     if [[ -n "$names" ]]; then mapfile -t dbs <<< "$names"; fi
     if ((${#dbs[@]} == 0)); then echo "Keine Anwendungsdatenbanken für $eng."; continue; fi
     for db in "${dbs[@]}"; do
-      if [[ ! "$db" =~ ^[a-z][a-z0-9_]{0,30}$ ]]; then
+      if [[ ! "$db" =~ ^[a-zA-Z][a-zA-Z0-9_]{0,30}$ ]]; then
         echo "FEHLER: Nicht kompatibler Datenbankname '$db' ($eng), übersprungen." >&2
         ((failed+=1)); continue
       fi
